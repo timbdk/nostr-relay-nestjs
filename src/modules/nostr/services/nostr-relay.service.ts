@@ -107,6 +107,32 @@ export class NostrRelayService implements OnApplicationShutdown {
       if (!this.messageHandlingConfig[msg[0].toLowerCase()]) {
         return;
       }
+
+      // NIP-46 Debug Logging: Track kind 24133/24134 events (testing/development only)
+      if (process.env.NODE_ENV === 'testing' || process.env.NODE_ENV === 'development') {
+        const msgType = msg[0];
+        if (msgType === 'EVENT' && msg[1]) {
+          const event = msg[1];
+          const kind = event.kind;
+          // NIP-46 kinds: 24133 (NostrConnect request/response)
+          if (kind === 24133 || kind === 24134) {
+            const pTags = (event.tags || []).filter((t: string[]) => t[0] === 'p').map((t: string[]) => t[1]);
+            this.logger.info(`[NIP46-EVENT] Received kind=${kind} id=${event.id?.substring(0, 8)} from=${event.pubkey?.substring(0, 8)} to=[${pTags.map((p: string) => p?.substring(0, 8)).join(',')}]`);
+          }
+        } else if (msgType === 'REQ' && msg.length > 2) {
+          // Log subscriptions that might be for NIP-46
+          const subscriptionId = msg[1];
+          const filters = msg.slice(2);
+          const hasNip46Kinds = filters.some((f: any) =>
+            f.kinds && (f.kinds.includes(24133) || f.kinds.includes(24134))
+          );
+          if (hasNip46Kinds) {
+            const pFilters = filters.map((f: any) => f['#p'] || []);
+            this.logger.info(`[NIP46-SUB] REQ id=${subscriptionId} #p=${JSON.stringify(pFilters.flat().map((p: string) => p?.substring(0, 8)))}`);
+          }
+        }
+      }
+
       await this.relay.handleMessage(client, msg);
       this.metricService.pushProcessingTime(msg[0], Date.now() - start);
     } catch (error) {
