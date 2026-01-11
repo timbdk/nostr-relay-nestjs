@@ -114,7 +114,7 @@ export class EventRepository extends IEventRepository {
         });
 
       if (numInsertedOrUpdatedRows === BigInt(0)) {
-        return { isDuplicate: true };
+        return { success: true, isDuplicate: true };
       }
 
       // replaceable event
@@ -133,11 +133,11 @@ export class EventRepository extends IEventRepository {
         dTagValue,
       });
 
-      return { isDuplicate: false };
+      return { success: true, isDuplicate: false };
     } catch (error) {
       if (error.code === '23505') {
         // 23505 is unique_violation
-        return { isDuplicate: true };
+        return { success: true, isDuplicate: true };
       }
       throw error;
     }
