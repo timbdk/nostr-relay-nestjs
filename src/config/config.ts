@@ -14,6 +14,8 @@ export function config() {
   return {
     hostname: env.HOSTNAME ?? env.DOMAIN,
     port: env.PORT ?? 3000,
+    relayUrl: env.RELAY_URL,
+    trustedSignerPubkey: env.TRUSTED_SIGNER_PUBKEY,
     environment: env.NODE_ENV,
     database: databaseConfig(env),
     meiliSearch: meiliSearchConfig(env),

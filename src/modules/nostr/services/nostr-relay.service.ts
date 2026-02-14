@@ -35,10 +35,12 @@ export class NostrRelayService implements OnApplicationShutdown {
     private readonly metricService: MetricService,
     nostrRelayLogger: NostrRelayLogger,
     eventRepository: EventRepository,
-    configService: ConfigService<Config, true>,
+    private readonly configService: ConfigService<Config, true>,
     wotService: WotService,
   ) {
     const hostname = configService.get('hostname');
+    const relayUrl = configService.get('relayUrl');
+    const trustedSignerPubkey = configService.get('trustedSignerPubkey');
     const {
       createdAtLowerLimit,
       createdAtUpperLimit,
@@ -52,8 +54,19 @@ export class NostrRelayService implements OnApplicationShutdown {
     this.messageHandlingConfig = configService.get('messageHandling', {
       infer: true,
     });
+    let relayHostname = hostname;
+    if (relayUrl) {
+      try {
+        const url = new URL(relayUrl);
+        relayHostname = url.hostname; // Must be hostname only (no port) for EventUtils validation
+        this.logger.info(`[DEBUG] Configured NostrRelay with RELAY_URL=${relayUrl} -> hostname=${relayHostname}`);
+      } catch (error) {
+        this.logger.warn(`Invalid RELAY_URL: ${relayUrl}`);
+      }
+    }
+
     this.relay = new NostrRelay(eventRepository, {
-      hostname,
+      hostname: relayHostname,
       logger: nostrRelayLogger,
       maxSubscriptionsPerClient,
       ...cacheConfig,
@@ -129,6 +142,18 @@ export class NostrRelayService implements OnApplicationShutdown {
           if (hasNip46Kinds) {
             const pFilters = filters.map((f: any) => f['#p'] || []);
             this.logger.info(`[NIP46-SUB] REQ id=${subscriptionId} #p=${JSON.stringify(pFilters.flat().map((p: string) => p?.substring(0, 8)))}`);
+          }
+        }
+      }
+
+      // Enforce Trusted Signer if configured
+      if (msg[0] === 'AUTH') {
+        const trustedSigner = this.configService.get('trustedSignerPubkey');
+        if (trustedSigner) {
+          const authEvent = msg[1];
+          if (authEvent.pubkey !== trustedSigner) {
+            this.logger.warn(`[AUTH] Rejected untrusted signer: ${authEvent.pubkey}`);
+            return createOutgoingNoticeMessage('restricted: unknown signer');
           }
         }
       }

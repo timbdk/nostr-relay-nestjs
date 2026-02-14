@@ -9,10 +9,13 @@ export const EnvironmentSchema = z.object({
   /*==== optional ====*/
   HOSTNAME: z.string().optional(),
   DOMAIN: z.string().optional(),
+  RELAY_URL: z.string().optional(), // Explicit canonical URL override
   NODE_ENV: z.string().default('development'),
   PORT: z.number().int().positive().optional(),
   GIT_COMMIT_SHA: z.string().optional(),
   DATABASE_MAX_CONNECTIONS: z.number().int().positive().optional(),
+
+  TRUSTED_SIGNER_PUBKEY: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 
   LOG_DIR: z.string().optional(),
   LOG_LEVEL: z.string().optional(),
