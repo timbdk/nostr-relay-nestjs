@@ -4,13 +4,17 @@ import {
   Event,
   Filter,
   createOutgoingNoticeMessage,
+  EventUtils,
 } from '@nostr-relay/common';
+import { schnorr } from '@noble/curves/secp256k1';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
 import { NostrRelay } from '@nostr-relay/core';
 import { CreatedAtLimitGuard } from '@nostr-relay/created-at-limit-guard';
 import { OrGuard } from '@nostr-relay/or-guard';
 import { PowGuard } from '@nostr-relay/pow-guard';
 import { Throttler } from '@nostr-relay/throttler';
-import { Validator } from '@nostr-relay/validator';
+import { VerityValidator } from './verity-validator';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Config } from 'src/config';
 import { MessageHandlingConfig } from 'src/config/message-handling.config';
@@ -26,7 +30,7 @@ import { BlacklistGuardPlugin, WhitelistGuardPlugin } from '../plugins';
 export class NostrRelayService implements OnApplicationShutdown {
   private readonly relay: NostrRelay;
   private readonly messageHandlingConfig: MessageHandlingConfig;
-  private readonly validator: Validator;
+  private readonly validator: VerityValidator;
   private readonly throttler: Throttler;
 
   constructor(
@@ -41,6 +45,7 @@ export class NostrRelayService implements OnApplicationShutdown {
     const hostname = configService.get('hostname');
     const relayUrl = configService.get('relayUrl');
     const trustedSignerPubkey = configService.get('trustedSignerPubkey');
+    const serializationPrefix = configService.get('serializationPrefix');
     const {
       createdAtLowerLimit,
       createdAtUpperLimit,
@@ -71,7 +76,7 @@ export class NostrRelayService implements OnApplicationShutdown {
       maxSubscriptionsPerClient,
       ...cacheConfig,
     });
-    this.validator = new Validator();
+    this.validator = new VerityValidator(serializationPrefix);
 
     this.throttler = new Throttler(throttlerConfig);
     this.relay.register(this.throttler);
@@ -94,6 +99,49 @@ export class NostrRelayService implements OnApplicationShutdown {
       const whitelistGuardPlugin = new WhitelistGuardPlugin(whitelist);
       orGuardPlugin.addGuard(whitelistGuardPlugin);
     }
+
+    // Monkey-patch EventUtils.validate to support custom serialization prefix
+    // This is required because NostrRelay's EventService uses EventUtils.validate internally
+    // and we cannot inject a custom validator into it.
+    EventUtils.validate = (event: Event) => {
+      // 1. Basic field validation (same as original)
+      if (!event.id || !/^[0-9a-f]{64}$/.test(event.id)) return 'invalid: id is wrong';
+      if (!event.pubkey || !/^[0-9a-f]{64}$/.test(event.pubkey)) return 'invalid: pubkey is wrong';
+      if (!event.sig || !/^[0-9a-f]{128}$/.test(event.sig)) return 'invalid: signature is wrong';
+
+      // 2. Custom ID Validation
+      try {
+        const serialized = JSON.stringify([
+          serializationPrefix,
+          event.pubkey,
+          event.created_at,
+          event.kind,
+          event.tags,
+          event.content,
+        ]);
+        const hash = sha256(new TextEncoder().encode(serialized));
+        const computedId = bytesToHex(hash);
+
+        if (event.id !== computedId) {
+          // Check if it matches standard serialization (0) for backward compatibility?
+          // Or just enforce prefix. Enforce for now.
+          return `invalid: id is wrong. Expected ${computedId}, got ${event.id}, prefix=${serializationPrefix}`;
+        }
+      } catch (e) {
+        return `invalid: id calculation failed: ${e.message}`;
+      }
+
+      // 3. Signature Verification
+      try {
+        if (!schnorr.verify(event.sig, event.id, event.pubkey)) {
+          return 'invalid: signature is wrong';
+        }
+      } catch (error) {
+        return 'invalid: signature verification failed';
+      }
+
+      return undefined; // Valid
+    };
 
     this.relay.register(orGuardPlugin);
     this.relay.register(createdAtLimitGuardPlugin);

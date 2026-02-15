@@ -26,6 +26,7 @@ export function config() {
     cache: cacheConfig(env),
     messageHandling: messageHandlingConfig(env),
     wot: wotConfig(env),
+    serializationPrefix: env.VERITY_SERIALIZATION_PREFIX,
   };
 }
 export type Config = ReturnType<typeof config>;

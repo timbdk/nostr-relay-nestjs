@@ -36,6 +36,8 @@
     "@nestjs/swagger": "^7.4.2",
     "@nestjs/throttler": "^5.2.0",
     "@nestjs/websockets": "^10.4.4",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "@nostr-relay/common": "^0.0.36",
     "@nostr-relay/core": "^0.0.36",
     "@nostr-relay/created-at-limit-guard": "^0.0.3",

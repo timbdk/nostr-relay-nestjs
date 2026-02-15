@@ -5,6 +5,10 @@ export const arraySchema = <T extends z.ZodTypeAny>(schema: T) =>
 
 export const EnvironmentSchema = z.object({
   DATABASE_URL: z.string(),
+  VERITY_SERIALIZATION_PREFIX: z.preprocess(
+    (v) => parseInt(String(v), 10),
+    z.number().int().positive(),
+  ),
 
   /*==== optional ====*/
   HOSTNAME: z.string().optional(),

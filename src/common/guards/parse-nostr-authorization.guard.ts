@@ -1,17 +1,19 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventUtils } from '@nostr-relay/common';
-import { Validator } from '@nostr-relay/validator';
+import { VerityValidator } from '../../modules/nostr/services/verity-validator';
 import { Request } from 'express';
 import { URL } from 'url';
 
 @Injectable()
 export class ParseNostrAuthorizationGuard implements CanActivate {
-  private readonly validator = new Validator();
+  private readonly validator: VerityValidator;
   private readonly hostname: string | undefined;
 
   constructor(configService: ConfigService) {
     this.hostname = configService.get('hostname');
+    const prefix = configService.get('serializationPrefix');
+    this.validator = new VerityValidator(prefix);
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
