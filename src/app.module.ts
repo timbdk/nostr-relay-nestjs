@@ -10,7 +10,10 @@ import { Config, config } from './config';
 import { Nip05Module } from './modules/nip-05/nip-05.module';
 import { NostrModule } from './modules/nostr/nostr.module';
 import { TaskModule } from './modules/task/task.mdodule';
+import { TestingModule } from './modules/testing/testing.module';
 import { loggerModuleFactory } from './utils';
+
+const isTesting = process.env.NODE_ENV === 'testing';
 
 @Module({
   imports: [
@@ -33,10 +36,11 @@ import { loggerModuleFactory } from './utils';
     NostrModule,
     Nip05Module,
     TaskModule,
+    ...(isTesting ? [TestingModule] : []),
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_GUARD, useClass: ParseNostrAuthorizationGuard },
   ],
 })
-export class AppModule {}
+export class AppModule { }

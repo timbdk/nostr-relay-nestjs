@@ -1,4 +1,4 @@
-import { Injectable, OnApplicationShutdown } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Event,
@@ -24,6 +24,7 @@ import { WotService } from '../../../modules/wot/wot.service';
 import { MetricService } from '../../metric/metric.service';
 import { EventRepository } from '../../repositories/event.repository';
 import { NostrRelayLogger } from '../../share/nostr-relay-logger.service';
+import { TestingCheckpointService } from '../../testing/testing-checkpoint.service';
 import { BlacklistGuardPlugin, WhitelistGuardPlugin } from '../plugins';
 
 @Injectable()
@@ -32,6 +33,7 @@ export class NostrRelayService implements OnApplicationShutdown {
   private readonly messageHandlingConfig: MessageHandlingConfig;
   private readonly validator: VerityValidator;
   private readonly throttler: Throttler;
+  private readonly trustedSignerPubkey: string | undefined;
 
   constructor(
     @InjectPinoLogger(NostrRelayService.name)
@@ -41,10 +43,12 @@ export class NostrRelayService implements OnApplicationShutdown {
     eventRepository: EventRepository,
     private readonly configService: ConfigService<Config, true>,
     wotService: WotService,
+    @Optional() private readonly checkpointService?: TestingCheckpointService,
   ) {
     const hostname = configService.get('hostname');
     const relayUrl = configService.get('relayUrl');
     const trustedSignerPubkey = configService.get('trustedSignerPubkey');
+    this.trustedSignerPubkey = trustedSignerPubkey;
     const serializationPrefix = configService.get('serializationPrefix');
     const {
       createdAtLowerLimit,
@@ -169,7 +173,7 @@ export class NostrRelayService implements OnApplicationShutdown {
         return;
       }
 
-      // NIP-46 Debug Logging: Track kind 24133/24134 events (testing/development only)
+      // NIP-46 Debug Logging & Checkpoint Broadcasting (testing/development only)
       if (process.env.NODE_ENV === 'testing' || process.env.NODE_ENV === 'development') {
         const msgType = msg[0];
         if (msgType === 'EVENT' && msg[1]) {
@@ -179,6 +183,14 @@ export class NostrRelayService implements OnApplicationShutdown {
           if (kind === 24133 || kind === 24134) {
             const pTags = (event.tags || []).filter((t: string[]) => t[0] === 'p').map((t: string[]) => t[1]);
             this.logger.info(`[NIP46-EVENT] Received kind=${kind} id=${event.id?.substring(0, 8)} from=${event.pubkey?.substring(0, 8)} to=[${pTags.map((p: string) => p?.substring(0, 8)).join(',')}]`);
+
+            // Broadcast checkpoint for NIP-46 events
+            this.checkpointService?.broadcast('relay.event.received', {
+              kind,
+              pubkey: event.pubkey?.substring(0, 16),
+              id: event.id?.substring(0, 16),
+              pTags: pTags.map((p: string) => p?.substring(0, 16)),
+            });
           }
         } else if (msgType === 'REQ' && msg.length > 2) {
           // Log subscriptions that might be for NIP-46
@@ -208,6 +220,17 @@ export class NostrRelayService implements OnApplicationShutdown {
 
       await this.relay.handleMessage(client, msg);
       this.metricService.pushProcessingTime(msg[0], Date.now() - start);
+
+      // Post-processing checkpoint for NIP-46 events
+      if (this.checkpointService && msg[0] === 'EVENT' && msg[1]) {
+        const event = msg[1];
+        if (event.kind === 24133 || event.kind === 24134) {
+          this.checkpointService.broadcast('relay.event.processed', {
+            kind: event.kind,
+            id: event.id?.substring(0, 16),
+          });
+        }
+      }
     } catch (error) {
       if (error instanceof ValidationError) {
         return createOutgoingNoticeMessage(error.message);
