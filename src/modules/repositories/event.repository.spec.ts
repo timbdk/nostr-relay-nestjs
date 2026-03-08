@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 import { createMock } from '@golevelup/ts-jest';
 import { ConfigService } from '@nestjs/config';
+import { PinoLogger } from 'nestjs-pino';
 import { EventKind, getTimestampInSeconds } from '@nostr-relay/common';
 import { Kysely } from 'kysely';
 import { createEvent } from '../../../test-utils/event';
@@ -23,6 +24,7 @@ describe('EventRepository', () => {
             maxConnections: 20,
           }),
         }),
+        createMock<PinoLogger>(),
       ),
       createMock<EventSearchRepository>(),
     );

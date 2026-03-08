@@ -11,6 +11,6 @@ import { Nip05Repository } from './nip-05.repository';
     EventSearchRepository,
     Nip05Repository,
   ],
-  exports: [EventRepository, EventSearchRepository, Nip05Repository],
+  exports: [KyselyDb, EventRepository, EventSearchRepository, Nip05Repository],
 })
-export class RepositoriesModule {}
+export class RepositoriesModule { }

@@ -11,7 +11,9 @@ import { Nip05Module } from './modules/nip-05/nip-05.module';
 import { NostrModule } from './modules/nostr/nostr.module';
 import { TaskModule } from './modules/task/task.mdodule';
 import { TestingModule } from './modules/testing/testing.module';
+import { RepositoriesModule } from './modules/repositories/repositories.module';
 import { loggerModuleFactory } from './utils';
+import { AppController } from './app.controller';
 
 const isTesting = process.env.NODE_ENV === 'testing';
 
@@ -36,8 +38,10 @@ const isTesting = process.env.NODE_ENV === 'testing';
     NostrModule,
     Nip05Module,
     TaskModule,
+    RepositoriesModule,
     ...(isTesting ? [TestingModule] : []),
   ],
+  controllers: [AppController],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_GUARD, useClass: ParseNostrAuthorizationGuard },

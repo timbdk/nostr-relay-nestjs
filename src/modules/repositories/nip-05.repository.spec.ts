@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 import { createMock } from '@golevelup/ts-jest';
 import { ConfigService } from '@nestjs/config';
+import { PinoLogger } from 'nestjs-pino';
 import { KyselyDb } from './kysely-db';
 import { Nip05Repository } from './nip-05.repository';
 
@@ -17,6 +18,7 @@ describe('EventRepository', () => {
           maxConnections: 20,
         }),
       }),
+      createMock<PinoLogger>(),
     );
     nip05Repository = new Nip05Repository(kyselyDb);
   });
