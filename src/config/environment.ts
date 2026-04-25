@@ -19,7 +19,9 @@ export const EnvironmentSchema = z.object({
   GIT_COMMIT_SHA: z.string().optional(),
   DATABASE_MAX_CONNECTIONS: z.number().int().positive().optional(),
 
-  TRUSTED_SIGNER_PUBKEY: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  TRUSTED_SIGNER_PUBKEY: arraySchema(
+    z.string().regex(/^[0-9a-f]{64}$/),
+  ).optional(),
 
   LOG_DIR: z.string().optional(),
   LOG_LEVEL: z.string().optional(),
@@ -45,16 +47,10 @@ export const EnvironmentSchema = z.object({
   MIN_POW_DIFFICULTY: z.number().int().positive().optional(),
   MAX_SUBSCRIPTIONS_PER_CLIENT: z.number().int().positive().optional(),
   BLACKLIST: arraySchema(
-    z
-      .string()
-      .regex(/^[0-9a-f]+$/)
-      .length(64),
+    z.string().regex(/^[0-9a-f]{64}$/),
   ).optional(),
   WHITELIST: arraySchema(
-    z
-      .string()
-      .regex(/^[0-9a-f]+$/)
-      .length(64),
+    z.string().regex(/^[0-9a-f]{64}$/),
   ).optional(),
 
   THROTTLER_TTL: z.number().int().positive().optional(),
