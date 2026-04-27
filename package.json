@@ -4,6 +4,7 @@
   "description": "A high-performance nostr relay, using PostgreSQL",
   "author": "codytseng",
   "private": true,
+  "packageManager": "npm@11.10.0",
   "license": "MIT",
   "repository": {
     "type": "git",
