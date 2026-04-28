@@ -61,8 +61,8 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "tdigest": "^0.1.2",
-    "zod": "^3.23.8",
-    "zod-validation-error": "^3.4.0"
+    "zod": "^4.3.6",
+    "zod-validation-error": "^5.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.11.1",

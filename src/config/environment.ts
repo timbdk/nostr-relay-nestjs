@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const arraySchema = <T extends z.ZodTypeAny>(schema: T) =>
+export const arraySchema = <T extends z.ZodType>(schema: T) =>
   z.preprocess((v) => (Array.isArray(v) ? v : [v]), z.array(schema));
 
 export const EnvironmentSchema = z.object({
