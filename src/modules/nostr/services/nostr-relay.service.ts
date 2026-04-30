@@ -10,6 +10,10 @@ import { schnorr } from '@noble/curves/secp256k1';
 import { randomUUID } from 'crypto';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
+import {
+  createRegisteredUserPolicy,
+  type ValidationContext,
+} from 'verity-event-validation-module';
 import { NostrRelay } from '@nostr-relay/core';
 import { CreatedAtLimitGuard } from '@nostr-relay/created-at-limit-guard';
 import { OrGuard } from '@nostr-relay/or-guard';
@@ -163,6 +167,9 @@ const wrapInSafety = (plugin: any): any => {
     //
     // WARNING: This is a global side effect and highly brittle.
     // We return a string (on error) or undefined (on success) to satisfy the library's expectation.
+    //
+    // Uses @noble/hashes directly (Node.js runtime — no Bun cache issue).
+    // The module's verifyVerityEvent (Web Crypto) is async and cannot be used here.
     (EventUtils as any).validate = (event: Event) => {
       // 1. Basic field validation (same as original)
       if (!event.id || !/^[0-9a-f]{64}$/.test(event.id)) {
@@ -175,7 +182,7 @@ const wrapInSafety = (plugin: any): any => {
         return 'invalid: signature is wrong';
       }
 
-      // 2. Custom ID Validation
+      // 2. Custom ID Validation (synchronous — must stay sync for EventUtils interface)
       try {
         const serialized = JSON.stringify([
           serializationPrefix,
@@ -191,9 +198,8 @@ const wrapInSafety = (plugin: any): any => {
         if (event.id !== computedId) {
           return `invalid: id is wrong. Expected ${computedId}, got ${event.id}`;
         }
-
       } catch (e) {
-        return `invalid: id calculation failed: ${e.message}`;
+        return `invalid: id calculation failed: ${(e as Error).message}`;
       }
 
       // 3. Signature Verification
@@ -461,28 +467,41 @@ const wrapInSafety = (plugin: any): any => {
           }
         }
         // Rule 6: All other kinds — registered accounts only
-        // For everyone else, verify the event's pubkey has a Kind 415 registration.
-        // In testing/development, we use a small retry loop to avoid race conditions with DB writes.
+        // Uses createRegisteredUserPolicy from event-validation-module with a
+        // custom ValidationContext that preserves the existing 3-attempt retry loop.
         else if (!isTrustedConnection) {
-          let registrations: Event[] = [];
-          const maxAttempts = 3;
-          for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            registrations = await this.findEvents(
-              [{ kinds: [415], authors: [event.pubkey], limit: 1 }],
-            );
-            if (registrations.length > 0) break;
-            if (attempt < maxAttempts - 1) {
-              await new Promise(resolve => setTimeout(resolve, 100)); // 100ms pause
-            }
-          }
+          // Capture `this` so arrow functions in the ValidationContext can close over it
+          const self = this;
+          const validationContext: ValidationContext = {
+            async checkUserIsRegistered(pubkey) {
+              // Retry loop to handle race conditions with DB writes
+              const maxAttempts = 3;
+              for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                const events = await self.findEvents(
+                  [{ kinds: [415], authors: [pubkey], limit: 1 }],
+                );
+                if (events.length > 0) return true;
+                if (attempt < maxAttempts - 1) {
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                }
+              }
+              return false;
+            },
+            async checkParentEventExists(eventId) {
+              const events = await self.findEvents(
+                [{ ids: [eventId], limit: 1 }],
+              );
+              return events.length > 0;
+            },
+          };
 
-          if (!registrations || registrations.length === 0) {
+          const policy = createRegisteredUserPolicy(validationContext);
+          const [, , ok, reason] = await policy.call(event);
+          if (!ok) {
             this.logger.warn(
               `[EVENT] Rejected event from unregistered account: ${event.pubkey?.substring(0, 16)}`,
             );
-            return client.send(buildRejectionMessage(
-              'restricted: account not registered',
-            ));
+            return client.send(buildRejectionMessage(reason));
           }
         }
       }

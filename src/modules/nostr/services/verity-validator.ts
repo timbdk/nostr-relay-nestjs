@@ -2,9 +2,7 @@ import { Optional } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Event, Filter, IncomingMessage } from '@nostr-relay/common';
 import { Validator } from '@nostr-relay/validator';
-import { schnorr } from '@noble/curves/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from '@noble/hashes/utils';
+import { verifyVerityEvent } from 'verity-event-validation-module';
 
 export class VerityValidator extends Validator {
   private readonly logger: PinoLogger | undefined;
@@ -51,6 +49,9 @@ export class VerityValidator extends Validator {
   /**
    * SERIALIZATION:
    * [prefix, pubkey, created_at, kind, tags, content]
+   *
+   * Uses verifyVerityEvent from event-validation-module (single source of truth
+   * for custom serialization prefix verification).
    */
   public async validateEvent(event: any): Promise<Event> {
     this.logger?.debug({ eventId: event.id }, 'Validating event');
@@ -83,32 +84,11 @@ export class VerityValidator extends Validator {
       throw new Error('invalid sig');
     }
 
-    // 2. Calculate ID using Custom Serialization
-    const serialized = JSON.stringify([
-      this.serializationPrefix,
-      pubkey,
-      created_at,
-      kind,
-      tags,
-      content,
-    ]);
-    const hash = sha256(new TextEncoder().encode(serialized));
-    const computedId = bytesToHex(hash);
-
-    if (id !== computedId) {
-      const debugInfo = `Expected ${computedId}, got ${id}. Prefix: ${this.serializationPrefix}`;
-      this.logger?.warn({ eventId: id, computedId, expectedId: computedId }, 'ID validation failed');
-      throw new Error(`invalid: id is wrong. ${debugInfo}`);
-    }
-
-    // 3. Verify Signature
-    try {
-      const isValid = await schnorr.verify(sig, id, pubkey);
-      if (!isValid) {
-        throw new Error('invalid signature');
-      }
-    } catch (e) {
-      throw new Error('invalid signature');
+    // Verify ID + signature using the shared module (custom serialization prefix)
+    if (!verifyVerityEvent(event, this.serializationPrefix)) {
+      const debugInfo = `Prefix: ${this.serializationPrefix}`;
+      this.logger?.warn({ eventId: id }, `ID/signature validation failed. ${debugInfo}`);
+      throw new Error('invalid: id or signature mismatch');
     }
 
     return event;

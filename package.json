@@ -47,6 +47,7 @@
     "@nostr-relay/throttler": "^0.0.5",
     "@nostr-relay/validator": "^0.0.36",
     "@nostr-relay/wot-guard": "^0.0.11",
+    "@nostrify/nostrify": "^0.52.0",
     "another-nestjs-ws-adapter": "^10.1.0",
     "hbs": "^4.2.0",
     "helmet": "^8.0.0",
