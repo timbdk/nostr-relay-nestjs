@@ -395,6 +395,14 @@ const wrapInSafety = (plugin: any): any => {
       //   - Cryptographic validation ensures nobody can forge events for keys they don't control.
       if (msg[0] === 'EVENT' && msg[1]) {
         const event = msg[1];
+
+        // Perform structural and cryptographic validation
+        try {
+          await this.validator.validateEvent(event);
+        } catch (e: any) {
+          return client.send(JSON.stringify(['OK', event.id, false, e.message]));
+        }
+
         const authenticatedPubkey = this.authenticatedSigners.get(client);
         const isTrustedConnection = this.isTrustedSigner(authenticatedPubkey);
 

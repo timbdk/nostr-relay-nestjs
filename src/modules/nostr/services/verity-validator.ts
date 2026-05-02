@@ -2,8 +2,18 @@ import { Optional } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Event, Filter, IncomingMessage } from '@nostr-relay/common';
 import { Validator } from '@nostr-relay/validator';
-import { verifyVerityEvent } from 'verity-event-validation-module';
-
+import {
+  verifyVerityEvent,
+  verityBaseEventSchema,
+  KIND_USERNAME_REGISTRATION,
+  validateUsernameRegistration,
+  KIND_USER_CONFIGURATION,
+  validateUserConfiguration,
+  KIND_ADMIN_COMMAND,
+  validateAdminCommand,
+  KIND_TEXT_NOTE,
+  validateTextNote
+} from 'verity-event-validation-module';
 export class VerityValidator extends Validator {
   private readonly logger: PinoLogger | undefined;
 
@@ -89,6 +99,27 @@ export class VerityValidator extends Validator {
       const debugInfo = `Prefix: ${this.serializationPrefix}`;
       this.logger?.warn({ eventId: id }, `ID/signature validation failed. ${debugInfo}`);
       throw new Error('invalid: id or signature mismatch');
+    }
+
+    // Structural base validation
+    const baseResult = verityBaseEventSchema.safeParse(event);
+    if (!baseResult.success) {
+      throw new Error(`invalid: structural validation failed - ${baseResult.error.issues[0]?.message}`);
+    }
+
+    // Kind-specific structural validation
+    if (kind === KIND_USERNAME_REGISTRATION) {
+      const result = validateUsernameRegistration(event);
+      if (!result.success) throw new Error(`invalid: structural validation failed - ${result.error.issues[0]?.message}`);
+    } else if (kind === KIND_USER_CONFIGURATION) {
+      const result = validateUserConfiguration(event);
+      if (!result.success) throw new Error(`invalid: structural validation failed - ${result.error.issues[0]?.message}`);
+    } else if (kind === KIND_ADMIN_COMMAND) {
+      const result = validateAdminCommand(event);
+      if (!result.success) throw new Error(`invalid: structural validation failed - ${result.error.issues[0]?.message}`);
+    } else if (kind === KIND_TEXT_NOTE) {
+      const result = validateTextNote(event);
+      if (!result.success) throw new Error(`invalid: structural validation failed - ${result.error.issues[0]?.message}`);
     }
 
     return event;
