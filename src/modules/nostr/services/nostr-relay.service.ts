@@ -6,12 +6,8 @@ import {
   createOutgoingNoticeMessage,
   EventUtils,
 } from '@nostr-relay/common';
-import { schnorr } from '@noble/curves/secp256k1';
 import { randomUUID } from 'crypto';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from '@noble/hashes/utils';
 import {
-  createRegisteredUserPolicy,
   type ValidationContext,
 } from 'verity-event-validation-module';
 import { NostrRelay } from '@nostr-relay/core';
@@ -20,6 +16,7 @@ import { OrGuard } from '@nostr-relay/or-guard';
 import { PowGuard } from '@nostr-relay/pow-guard';
 import { Throttler } from '@nostr-relay/throttler';
 import { VerityValidator } from './verity-validator';
+import { verifyVerityEventSync } from './verity-crypto-validator';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Config } from 'src/config';
 import { MessageHandlingConfig } from 'src/config/message-handling.config';
@@ -161,57 +158,14 @@ const wrapInSafety = (plugin: any): any => {
       this.relay.register(wrapInSafety(orGuardPlugin));
     }
 
-    // Monkey-patch EventUtils.validate to support custom serialization prefix
+    // Monkey-patch EventUtils.validate to use our extracted crypto function.
     // This is required because NostrRelay's EventService uses EventUtils.validate internally
     // and we cannot inject a custom validator into it.
     //
     // WARNING: This is a global side effect and highly brittle.
-    // We return a string (on error) or undefined (on success) to satisfy the library's expectation.
-    //
-    // Uses @noble/hashes directly (Node.js runtime — no Bun cache issue).
-    // The module's verifyVerityEvent (Web Crypto) is async and cannot be used here.
+    // The actual logic lives in verity-crypto-validator.ts for testability.
     (EventUtils as any).validate = (event: Event) => {
-      // 1. Basic field validation (same as original)
-      if (!event.id || !/^[0-9a-f]{64}$/.test(event.id)) {
-        return 'invalid: id is wrong';
-      }
-      if (!event.pubkey || !/^[0-9a-f]{64}$/.test(event.pubkey)) {
-        return 'invalid: pubkey is wrong';
-      }
-      if (!event.sig || !/^[0-9a-f]{128}$/.test(event.sig)) {
-        return 'invalid: signature is wrong';
-      }
-
-      // 2. Custom ID Validation (synchronous — must stay sync for EventUtils interface)
-      try {
-        const serialized = JSON.stringify([
-          serializationPrefix,
-          event.pubkey,
-          event.created_at,
-          event.kind,
-          event.tags,
-          event.content,
-        ]);
-        const hash = sha256(new TextEncoder().encode(serialized));
-        const computedId = bytesToHex(hash);
-
-        if (event.id !== computedId) {
-          return `invalid: id is wrong. Expected ${computedId}, got ${event.id}`;
-        }
-      } catch (e) {
-        return `invalid: id calculation failed: ${(e as Error).message}`;
-      }
-
-      // 3. Signature Verification
-      try {
-        if (!schnorr.verify(event.sig, event.id, event.pubkey)) {
-          return 'invalid: signature is wrong';
-        }
-      } catch (error) {
-        return 'invalid: signature verification failed';
-      }
-
-      return undefined; // Valid
+      return verifyVerityEventSync(event, serializationPrefix);
     };
 
     this.relay.register(wrapInSafety(createdAtLimitGuardPlugin));
@@ -382,12 +336,8 @@ const wrapInSafety = (plugin: any): any => {
         return;
       }
 
-      // 4. EVENT Write Authorization logic (Layer 2)    //
-      // Security model (see documentation/services/relay.md):
-      //   1. NIP-42 gate: All writes require an authenticated WebSocket connection.
-      //   2. Kind-specific rules: NIP-46 commands must involve a trusted signer; Kind 415 is signer-only.
-      //   3. Cryptographic validation: EventUtils.validate checks signature against custom serialization prefix.
-      //   4. Custom Layer 2: relay.handleMessage() is preceded by our custom code which checks event.pubkey has a Kind 415 registration.
+      // EVENT Write Authorization Pipeline
+      // Security ordering: NIP-42 → crypto → connection policies → registry.check → core
       //
       // No identity lock (event.pubkey === authenticated_pubkey) is enforced because:
       //   - NIP-46 remote signing means the web-client authenticates as client.keypair but publishes
@@ -396,13 +346,6 @@ const wrapInSafety = (plugin: any): any => {
       if (msg[0] === 'EVENT' && msg[1]) {
         const event = msg[1];
 
-        // Perform structural and cryptographic validation
-        try {
-          await this.validator.validateEvent(event);
-        } catch (e: any) {
-          return client.send(JSON.stringify(['OK', event.id, false, e.message]));
-        }
-
         const authenticatedPubkey = this.authenticatedSigners.get(client);
         const isTrustedConnection = this.isTrustedSigner(authenticatedPubkey);
 
@@ -410,7 +353,7 @@ const wrapInSafety = (plugin: any): any => {
           return JSON.stringify(['OK', event.id, false, reason]);
         };
 
-        // Gate: ALL writes require NIP-42 authentication
+        // Step 1: NIP-42 gate (cheapest check — no DB, no crypto)
         if (!authenticatedPubkey) {
           this.logger.warn(
             `[EVENT] Rejected event from unauthenticated connection. Event pubkey: ${event.pubkey?.substring(0, 16)}`,
@@ -427,90 +370,72 @@ const wrapInSafety = (plugin: any): any => {
           ));
         }
 
-        // Rule 1: NIP-46 Commands (24133/24134)
-        // NIP-46 events are end-to-end encrypted; the signer ACL engine handles authorization.
-        // The relay permits NIP-46 events if any of these hold:
-        //   a) Targeting a trusted signer (admin commands from hooks)
-        //   b) Published BY a trusted signer (signer responses via SIGNER_MASTER_KEY)
-        //   c) The connection or target is a registered account (Kind 415 exists)
-        //      This covers: web client→user-key commands, user-backend→client responses
+        // Step 2: Crypto verification (before any content inspection)
+        // Uses the extracted sync function — same logic as the EventUtils monkey-patch.
+        // We verify explicitly here so we can reject BEFORE registry.check() runs
+        // (which would otherwise leak registration status via error codes).
+        const cryptoError = verifyVerityEventSync(event, this.configService.get('serializationPrefix'));
+        if (cryptoError) {
+          return client.send(buildRejectionMessage(cryptoError));
+        }
+
+        // Step 3: Connection-level policies (Kind 415, NIP-46)
+        // These are relay-specific rules that depend on connection identity, NOT event content.
+
+        // Kind 415 (username registration) can only be published by the signer daemon
+        // over a trusted connection. The event's pubkey is the user's key, but only
+        // trusted connections may transmit these events.
+        if (event.kind === 415 && !isTrustedConnection) {
+          return client.send(buildRejectionMessage(
+            'restricted: Kind 415 requires trusted connection',
+          ));
+        }
+
+        // NIP-46 events (24133/24134) require an authenticated connection.
+        // The NIP-42 gate above already ensures authentication.
+        // The signer's ACL engine handles fine-grained authorization for NIP-46 commands;
+        // the relay's job is only ensuring the transport is authenticated.
         if (event.kind === 24133 || event.kind === 24134) {
-          const pTag = event.tags?.find((t: string[]) => t[0] === 'p')?.[1];
-          const isTargetingSigner = this.isTrustedSigner(pTag);
-
-          if (!isTargetingSigner && !isTrustedConnection) {
-            // Check if either the connection identity or target is a registered account
-            const pubkeysToCheck = [authenticatedPubkey, pTag].filter(Boolean) as string[];
-            let isKnownParticipant = false;
-
-            for (const pk of pubkeysToCheck) {
-              const registrations = await this.findEvents(
-                [{ kinds: [415], authors: [pk], limit: 1 }],
-              );
-              if (registrations.length > 0) {
-                isKnownParticipant = true;
-                break;
-              }
-            }
-
-            if (!isKnownParticipant) {
-              this.logger.warn(
-                `[EVENT] Rejected NIP-46 command targeting unknown pubkey: ${pTag}`,
-              );
-              return client.send(buildRejectionMessage(
-                'restricted: NIP-46 commands must target a trusted signer',
-              ));
-            }
-          }
+          // All NIP-46 events pass through if the connection is authenticated.
+          // No registration lookup needed — the signer ACL handles authorization.
         }
-        // Rule 4-5: Kind 415 (Registration) — trusted signers only
-        else if (event.kind === 415) {
-          if (!isTrustedConnection) {
-            this.logger.warn(
-              `[EVENT] Rejected Kind 415 from non-trusted client: ${event.pubkey?.substring(0, 16)}`,
-            );
-            return client.send(buildRejectionMessage(
-              'restricted: only trusted signers can publish kind 415',
-            ));
-          }
-        }
-        // Rule 6: All other kinds — registered accounts only
-        // Uses createRegisteredUserPolicy from event-validation-module with a
-        // custom ValidationContext that preserves the existing 3-attempt retry loop.
-        else if (!isTrustedConnection) {
-          // Capture `this` so arrow functions in the ValidationContext can close over it
-          const self = this;
-          const validationContext: ValidationContext = {
-            async checkUserIsRegistered(pubkey) {
-              // Retry loop to handle race conditions with DB writes
-              const maxAttempts = 3;
-              for (let attempt = 0; attempt < maxAttempts; attempt++) {
-                const events = await self.findEvents(
-                  [{ kinds: [415], authors: [pubkey], limit: 1 }],
-                );
-                if (events.length > 0) return true;
-                if (attempt < maxAttempts - 1) {
-                  await new Promise(resolve => setTimeout(resolve, 100));
-                }
-              }
-              return false;
-            },
-            async checkParentEventExists(eventId) {
+
+        // Step 4: Framework-driven validation (structural + publisher + context)
+        const self = this;
+        const validationContext: ValidationContext = {
+          async checkUserIsRegistered(pubkey) {
+            // Retry loop to handle race conditions with DB writes
+            const maxAttempts = 3;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
               const events = await self.findEvents(
-                [{ ids: [eventId], limit: 1 }],
+                [{ kinds: [415], authors: [pubkey], limit: 1 }],
               );
-              return events.length > 0;
-            },
-          };
-
-          const policy = createRegisteredUserPolicy(validationContext);
-          const [, , ok, reason] = await policy.call(event);
-          if (!ok) {
-            this.logger.warn(
-              `[EVENT] Rejected event from unregistered account: ${event.pubkey?.substring(0, 16)}`,
+              if (events.length > 0) return true;
+              if (attempt < maxAttempts - 1) {
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              }
+            }
+            return false;
+          },
+          async checkParentEventExists(eventId) {
+            const events = await self.findEvents(
+              [{ ids: [eventId], limit: 1 }],
             );
-            return client.send(buildRejectionMessage(reason));
-          }
+            return events.length > 0;
+          },
+        };
+
+        const checkResult = await this.validator.registry.check(event, {
+          context: validationContext,
+          trustedSigners: this.trustedSignerPubkey,
+          skipPublisherCheck: isTrustedConnection,
+          skipContextCheck: false,
+        });
+
+        if (!checkResult.ok) {
+          const firstError = checkResult.errors[0];
+          const reason = `invalid: [${firstError.code}]: ${firstError.message}`;
+          return client.send(buildRejectionMessage(reason));
         }
       }
 
@@ -546,7 +471,8 @@ const wrapInSafety = (plugin: any): any => {
   }
 
   async validateEvent(data: any) {
-    return await this.validator.validateEvent(data);
+    const result = await this.validator.validateAndResolve(data);
+    return result.event;
   }
 
   async validateFilter(data: any) {

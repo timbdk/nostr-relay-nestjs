@@ -35,7 +35,7 @@ export class ParseNostrAuthorizationGuard implements CanActivate {
       const decoded = JSON.stringify(
         Buffer.from(token, 'base64').toString('utf-8'),
       );
-      const event = await this.validator.validateEvent(JSON.parse(decoded));
+      const event = (await this.validator.validateAndResolve(JSON.parse(decoded))).event;
       const validateErrorMsg = EventUtils.validate(event);
       if (validateErrorMsg) {
         return true;
