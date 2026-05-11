@@ -393,17 +393,14 @@ const wrapInSafety = (plugin: any): any => {
 
         // NIP-46 events (24133/24134) require an authenticated connection.
         // The NIP-42 gate above already ensures authentication.
-        // The relay also restricts p-tag targets to trusted signer pubkeys to prevent
-        // NIP-46 spam to arbitrary npubs. The signer's ACL engine handles fine-grained
-        // command authorization; the relay gates at the transport level.
+        // The signer's ACL engine handles fine-grained authorization for NIP-46 commands;
+        // the relay's job is only ensuring the transport is authenticated.
+        // NOTE: p-tag targets cannot be validated here because NIP-46 is bidirectional —
+        // clients target user pubkeys (not the signer's admin identity), and the relay
+        // has no way to know which user pubkeys the signer manages.
         if (event.kind === 24133 || event.kind === 24134) {
-          const pTags = event.tags?.filter((t: string[]) => t[0] === 'p').map((t: string[]) => t[1]) ?? []
-          const untrusted = pTags.filter((p: string) => !this.isTrustedSigner(p))
-          if (untrusted.length > 0) {
-            return client.send(buildRejectionMessage(
-              'restricted: NIP-46 commands must target a trusted signer',
-            ))
-          }
+          // All NIP-46 events pass through if the connection is authenticated.
+          // No registration lookup needed — the signer ACL handles authorization.
         }
 
         // Step 4: Framework-driven validation (structural + publisher + context)
