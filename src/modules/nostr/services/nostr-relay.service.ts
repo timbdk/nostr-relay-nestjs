@@ -179,7 +179,7 @@ const wrapInSafety = (plugin: any): any => {
   private readonly authChallenges = new WeakMap<WebSocket, string>();
 
   /**
-   * Check if a pubkey is a trusted signer (signing-service, auth-hooks, or test registrar).
+   * Check if a pubkey is a trusted signer (signer-service, auth-hooks, or test registrar).
    * Returns false for undefined/null pubkeys.
    */
   private isTrustedSigner(pubkey: string | undefined): boolean {
