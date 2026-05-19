@@ -248,8 +248,11 @@ const wrapInSafety = (plugin: any): any => {
             pTags: pTags.map((p: string) => p?.substring(0, 16)),
           });
 
-          // NIP-46 detailed logging (kinds 24133/24134)
-          if (kind === 24133 || kind === 24134) {
+          // NIP-46 detailed logging (kinds 24133/24134/24135)
+          // TODO: Identity Resolution Phase (Read Policies)
+          // Extract 'client' and 'user' tags from kind 24135 events here 
+          // to populate the Map<devicePubkey, userPubkey> connection state.
+          if (kind === 24133 || kind === 24134 || kind === 24135) {
             this.logger.info(
               `[NIP46-EVENT] Received kind=${kind} id=${event.id?.substring(
                 0,
@@ -265,7 +268,7 @@ const wrapInSafety = (plugin: any): any => {
           const filters = msg.slice(2);
           const hasNip46Kinds = filters.some(
             (f: any) =>
-              f.kinds && (f.kinds.includes(24133) || f.kinds.includes(24134)),
+              f.kinds && (f.kinds.includes(24133) || f.kinds.includes(24134) || f.kinds.includes(24135)),
           );
           if (hasNip46Kinds) {
             const pFilters = filters.map((f: any) => f['#p'] || []);
@@ -391,14 +394,14 @@ const wrapInSafety = (plugin: any): any => {
           ));
         }
 
-        // NIP-46 events (24133/24134) require an authenticated connection.
+        // NIP-46 events (24133/24134/24135) require an authenticated connection.
         // The NIP-42 gate above already ensures authentication.
         // The signer's ACL engine handles fine-grained authorization for NIP-46 commands;
         // the relay's job is only ensuring the transport is authenticated.
         // NOTE: p-tag targets cannot be validated here because NIP-46 is bidirectional —
         // clients target user pubkeys (not the signer's admin identity), and the relay
         // has no way to know which user pubkeys the signer manages.
-        if (event.kind === 24133 || event.kind === 24134) {
+        if (event.kind === 24133 || event.kind === 24134 || event.kind === 24135) {
           // All NIP-46 events pass through if the connection is authenticated.
           // No registration lookup needed — the signer ACL handles authorization.
         }
