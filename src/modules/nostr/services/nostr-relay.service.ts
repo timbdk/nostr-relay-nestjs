@@ -9,6 +9,8 @@ import {
 import { randomUUID } from 'crypto';
 import {
   type ValidationContext,
+  evaluateReadPolicy,
+  type ReadPolicyContext,
 } from 'verity-event-validation-module';
 import { NostrRelay } from '@nostr-relay/core';
 import { CreatedAtLimitGuard } from '@nostr-relay/created-at-limit-guard';
@@ -176,6 +178,9 @@ const wrapInSafety = (plugin: any): any => {
   }
 
   private readonly authenticatedSigners = new WeakMap<WebSocket, string>();
+  private readonly resolvedIdentities = new WeakMap<WebSocket, string>();
+  /** Persistent device→user identity mapping (survives connection lifecycles). */
+  private readonly deviceIdentities = new Map<string, string>();
   private readonly authChallenges = new WeakMap<WebSocket, string>();
 
   /**
@@ -189,19 +194,97 @@ const wrapInSafety = (plugin: any): any => {
     return trustedSigners.includes(pubkey);
   }
 
+  /**
+   * Builds a ReadPolicyContext for a given client connection.
+   * - devicePubkey: NIP-42 authenticated device key (grants 'public' tier)
+   * - userPubkey: resolved user identity via Kind 24135 attestation (grants 'authenticated' tier)
+   */
+  private buildReadContext(client: WebSocket): ReadPolicyContext {
+    const devicePubkey = this.authenticatedSigners.get(client);
+
+    // Resolved identity lookup:
+    // 1. Try the per-connection WeakMap (set when attestation arrived on an active connection)
+    // 2. Fall back to the persistent Map (set from attestations that arrived between connections)
+    let userPubkey = this.resolvedIdentities.get(client);
+    if (!userPubkey && devicePubkey) {
+      userPubkey = this.deviceIdentities.get(devicePubkey);
+    }
+
+    return { devicePubkey, userPubkey };
+  }
+
+  /**
+   * Resolves the user identity for a device key connection.
+   * Called when a Kind 24135 event with 'client' and 'user' attestation tags is observed.
+   * Maps: device key → user pubkey (for read policy 'authenticated' tier access).
+   */
+  private resolveIdentity(clientPubkey: string, userPubkey: string): void {
+    // Always persist the mapping so future connections can use it.
+    this.deviceIdentities.set(clientPubkey, userPubkey);
+
+    // Apply to all currently-active connections for this device key.
+    const connections = this.authenticatedConnections.get(clientPubkey);
+    if (connections) {
+      for (const ws of connections) {
+        this.resolvedIdentities.set(ws, userPubkey);
+      }
+      this.logger.info(
+        `[IDENTITY] Resolved identity: device=${clientPubkey.substring(0, 8)} → user=${userPubkey.substring(0, 8)} (${connections.size} connection(s))`,
+      );
+      this.checkpointService?.broadcast('relay.identity.resolved', {
+        devicePubkey: clientPubkey.substring(0, 16),
+        userPubkey: userPubkey.substring(0, 16),
+        connections: connections.size
+      });
+    } else {
+      this.logger.info(
+        `[IDENTITY] Stored identity (no active connections): device=${clientPubkey.substring(0, 8)} → user=${userPubkey.substring(0, 8)}`,
+      );
+    }
+  }
+
+  // Forward lookup: authenticated pubkey → Set<WebSocket> (for identity resolution)
+  // A device may have multiple concurrent WebSocket connections.
+  private readonly authenticatedConnections = new Map<string, Set<WebSocket>>();
+
   handleConnection(client: WebSocket, ip = 'unknown') {
     // Intercept the core's AUTH challenge to capture it for our verification layer.
     // The @nostr-relay/core sends ["AUTH", ctx.id] (a UUID) when hostname is configured.
     // We must NOT send a second challenge — the NDK client uses the first one it receives.
+    //
+    // Read Policy: This same interception point filters outbound EVENT messages
+    // through the read policy evaluator, ensuring subscribers only receive events
+    // they're authorized to see.
     const originalSend = client.send.bind(client);
     client.send = (data: string | Buffer, ...args: any[]) => {
       try {
-        const parsed = JSON.parse(typeof data === 'string' ? data : data.toString());
-        if (Array.isArray(parsed) && parsed[0] === 'AUTH' && typeof parsed[1] === 'string') {
-          this.authChallenges.set(client, parsed[1]);
-          this.checkpointService?.broadcast('relay.auth.challenge_sent', {
-            challenge: parsed[1].substring(0, 16),
-          });
+        const raw = typeof data === 'string' ? data : data.toString();
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          // AUTH challenge capture (existing behavior)
+          if (parsed[0] === 'AUTH' && typeof parsed[1] === 'string') {
+            this.authChallenges.set(client, parsed[1]);
+            this.checkpointService?.broadcast('relay.auth.challenge_sent', {
+              challenge: parsed[1].substring(0, 16),
+            });
+          }
+
+          // Read Policy: filter outbound EVENT messages
+          // Format: ["EVENT", subscriptionId, event]
+          if (parsed[0] === 'EVENT' && parsed[2] && typeof parsed[2] === 'object') {
+            // Trusted signers bypass read policy — they are system services
+            // (e.g. the signer daemon) that use a single NIP-42 connection
+            // but subscribe to events for multiple user keys.
+            const senderPubkey = this.authenticatedSigners.get(client);
+            const isTrusted = senderPubkey && this.isTrustedSigner(senderPubkey);
+            if (!isTrusted) {
+              const context = this.buildReadContext(client);
+              if (!evaluateReadPolicy(parsed[2], context)) {
+                // Silently drop — the subscriber is not authorized to see this event
+                return;
+              }
+            }
+          }
         }
       } catch { /* not JSON, ignore */ }
       return originalSend(data, ...args);
@@ -212,6 +295,17 @@ const wrapInSafety = (plugin: any): any => {
   }
 
   handleDisconnect(client: WebSocket) {
+    // Clean up forward lookup on disconnect
+    const pubkey = this.authenticatedSigners.get(client);
+    if (pubkey) {
+      const connections = this.authenticatedConnections.get(pubkey);
+      if (connections) {
+        connections.delete(client);
+        if (connections.size === 0) {
+          this.authenticatedConnections.delete(pubkey);
+        }
+      }
+    }
     this.relay.handleDisconnect(client);
     this.metricService.decrementConnectionCount();
   }
@@ -249,9 +343,6 @@ const wrapInSafety = (plugin: any): any => {
           });
 
           // NIP-46 detailed logging (kinds 24133/24134/24135)
-          // TODO: Identity Resolution Phase (Read Policies)
-          // Extract 'client' and 'user' tags from kind 24135 events here 
-          // to populate the Map<devicePubkey, userPubkey> connection state.
           if (kind === 24133 || kind === 24134 || kind === 24135) {
             this.logger.info(
               `[NIP46-EVENT] Received kind=${kind} id=${event.id?.substring(
@@ -261,6 +352,17 @@ const wrapInSafety = (plugin: any): any => {
                 .map((p: string) => p?.substring(0, 8))
                 .join(',')}]`,
             );
+          }
+
+          // Identity Resolution: Kind 24135 events with 'client' and 'user' tags
+          // provide identity attestation from the signer. Use them to resolve
+          // device key → user pubkey for read policy 'authenticated' tier access.
+          if (kind === 24135) {
+            const clientTag = tags.find((t: string[]) => t[0] === 'client')?.[1];
+            const userTag = tags.find((t: string[]) => t[0] === 'user')?.[1];
+            if (clientTag && userTag) {
+              this.resolveIdentity(clientTag, userTag);
+            }
           }
         } else if (msgType === 'REQ' && msg.length > 2) {
           // Log subscriptions that might be for NIP-46
@@ -320,6 +422,19 @@ const wrapInSafety = (plugin: any): any => {
 
         // 3. Success (ANY PUBKEY ALLOWED to authenticate their connection)
         this.authenticatedSigners.set(client, authEvent.pubkey);
+        // Maintain forward lookup for identity resolution
+        const existingConnections = this.authenticatedConnections.get(authEvent.pubkey);
+        if (existingConnections) {
+          existingConnections.add(client);
+        } else {
+          this.authenticatedConnections.set(authEvent.pubkey, new Set([client]));
+        }
+
+        // Apply any previously-stored identity for this device key.
+        const storedIdentity = this.deviceIdentities.get(authEvent.pubkey);
+        if (storedIdentity) {
+          this.resolvedIdentities.set(client, storedIdentity);
+        }
 
         this.checkpointService?.broadcast('relay.auth.success', {
           pubkey: authEvent.pubkey?.substring(0, 16),
