@@ -1,6 +1,6 @@
-import { schnorr } from '@noble/curves/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from '@noble/hashes/utils';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { schnorr } = require('@noble/curves/secp256k1.js');
+import { createHash } from 'crypto';
 import type { Event } from '@nostr-relay/common';
 
 /**
@@ -36,8 +36,8 @@ export function verifyVerityEventSync(event: Event, serializationPrefix: number)
       event.tags,
       event.content,
     ]);
-    const hash = sha256(new TextEncoder().encode(serialized));
-    const computedId = bytesToHex(hash);
+    const hash = createHash('sha256').update(serialized).digest();
+    const computedId = hash.toString('hex');
 
     if (event.id !== computedId) {
       return `invalid: id is wrong. Expected ${computedId}, got ${event.id}`;
@@ -48,7 +48,11 @@ export function verifyVerityEventSync(event: Event, serializationPrefix: number)
 
   // 3. Schnorr signature verification
   try {
-    if (!schnorr.verify(event.sig, event.id, event.pubkey)) {
+    const sigBytes = new Uint8Array(Buffer.from(event.sig, 'hex'));
+    const idBytes = new Uint8Array(Buffer.from(event.id, 'hex'));
+    const pubkeyBytes = new Uint8Array(Buffer.from(event.pubkey, 'hex'));
+
+    if (!schnorr.verify(sigBytes, idBytes, pubkeyBytes)) {
       return 'invalid: signature is wrong';
     }
   } catch (error) {
