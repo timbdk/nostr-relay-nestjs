@@ -6,7 +6,7 @@ import type { Event } from '@nostr-relay/common';
 /**
  * Synchronous Verity event verification using @noble/hashes.
  *
- * This function duplicates the logic of event-validation-module's
+ * This function duplicates the logic of event-data-module's
  * verifyVerityEvent, but uses synchronous @noble/hashes instead of
  * the async Web Crypto API. This is required because @nostr-relay/core's
  * EventUtils.validate interface demands synchronous returns.

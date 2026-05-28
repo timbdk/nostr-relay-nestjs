@@ -5,7 +5,7 @@ import { Validator } from '@nostr-relay/validator'
 import {
   KindRegistry,
   registeredKinds
-} from 'verity-event-validation-module'
+} from 'verity-event-data-module'
 
 export class VerityValidator extends Validator {
   private readonly logger: PinoLogger | undefined
@@ -66,7 +66,7 @@ export class VerityValidator extends Validator {
    * SERIALIZATION:
    * [prefix, pubkey, created_at, kind, tags, content]
    *
-   * Uses verifyVerityEvent from event-validation-module (single source of truth
+   * Uses verifyVerityEvent from event-data-module (single source of truth
    * for custom serialization prefix verification).
    *
    * Returns the validated event and, when available, the resolved variant name

@@ -11,7 +11,7 @@ import {
   type ValidationContext,
   evaluateReadPolicy,
   type ReadPolicyContext,
-} from 'verity-event-validation-module';
+} from 'verity-event-data-module';
 import { NostrRelay } from '@nostr-relay/core';
 import { CreatedAtLimitGuard } from '@nostr-relay/created-at-limit-guard';
 import { OrGuard } from '@nostr-relay/or-guard';
