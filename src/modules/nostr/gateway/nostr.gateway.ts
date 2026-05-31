@@ -1,4 +1,4 @@
-import { UseFilters, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Optional, UseFilters, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConnectedSocket,
@@ -23,6 +23,7 @@ import { LoggingInterceptor } from '../interceptors';
 import { SubscriptionIdSchema } from '../schemas';
 import { EventService } from '../services/event.service';
 import { NostrRelayService } from '../services/nostr-relay.service';
+import { TestingCheckpointService } from '../../testing/testing-checkpoint.service';
 
 @WebSocketGateway({
   maxPayload: 256 * 1024, // 256KB
@@ -39,6 +40,7 @@ export class NostrGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly eventService: EventService,
     private readonly nostrRelayService: NostrRelayService,
     configService: ConfigService<Config, true>,
+    @Optional() private readonly testingCheckpointService?: TestingCheckpointService,
   ) {
     this.messageHandlingConfig = configService.get('messageHandling', {
       infer: true,
@@ -46,7 +48,9 @@ export class NostrGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   handleConnection(client: WebSocket, req: Request) {
-    this.nostrRelayService.handleConnection(client, getIpFromReq(req));
+    const ip = getIpFromReq(req);
+    this.nostrRelayService.handleConnection(client, ip);
+    this.testingCheckpointService?.broadcast('relay.client.connected', { ip });
   }
 
   handleDisconnect(client: WebSocket) {
