@@ -53,6 +53,24 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api', app, document);
 
+  // Global safety nets for transient database errors
+  process.on('unhandledRejection', (reason, promise) => {
+    app.get(Logger).warn({ reason, promise }, 'Unhandled Rejection');
+  });
+
+  process.on('uncaughtException', (err) => {
+    const isTransientDbError =
+      err.message.includes('terminating connection due to administrator command') ||
+      err.message.includes('Connection terminated unexpectedly');
+
+    if (isTransientDbError) {
+      app.get(Logger).warn({ err }, 'Transient database connection dropped. Recovering...');
+    } else {
+      app.get(Logger).fatal({ err }, 'Uncaught Exception. Exiting...');
+      process.exit(1);
+    }
+  });
+
   await app.listen(port);
 }
 bootstrap();

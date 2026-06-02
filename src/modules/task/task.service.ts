@@ -17,17 +17,29 @@ export class TaskService {
 
   @Interval(600000) // 10 minutes
   async deleteExpiredEvents() {
-    const affected = await this.eventRepository.deleteExpiredEvents();
-    this.logger.info(`Deleted ${affected} expired events`);
+    try {
+      const affected = await this.eventRepository.deleteExpiredEvents();
+      this.logger.info(`Deleted ${affected} expired events`);
+    } catch (err: any) {
+      this.logger.warn({ err }, 'Failed to delete expired events');
+    }
   }
 
   @Cron(CronExpression.EVERY_HOUR)
   async recordMetric() {
-    this.metricService.recordMetric();
+    try {
+      this.metricService.recordMetric();
+    } catch (err: any) {
+      this.logger.warn({ err }, 'Failed to record metrics');
+    }
   }
 
   @Interval(3600000) // 1 hour
   async refreshWot() {
-    await this.wotService.refreshWot();
+    try {
+      await this.wotService.refreshWot();
+    } catch (err: any) {
+      this.logger.warn({ err }, 'Failed to refresh WOT');
+    }
   }
 }
