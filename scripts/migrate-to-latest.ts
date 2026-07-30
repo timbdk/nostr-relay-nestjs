@@ -6,10 +6,36 @@ import {
   Kysely,
   Migrator,
   PostgresDialect,
+  sql,
 } from 'kysely';
 import * as path from 'path';
 import { Pool } from 'pg';
 import { migrateMigrationsTable } from './migrate-old-migrations-table';
+
+async function waitForDatabase(db: Kysely<any>) {
+  let attempts = 0;
+  const maxAttempts = 30;
+  let delay = 500;
+
+  while (attempts < maxAttempts) {
+    try {
+      await sql`SELECT 1`.execute(db);
+      console.log('Database is ready.');
+      return;
+    } catch (err: any) {
+      attempts++;
+      console.warn(
+        `Database not ready yet (attempt ${attempts}/${maxAttempts}). Retrying in ${delay}ms...`
+      );
+      if (attempts >= maxAttempts) {
+        console.error('Database connection timed out.');
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(delay * 1.5, 2000);
+    }
+  }
+}
 
 async function migrateToLatest() {
   const db = new Kysely<any>({
@@ -19,6 +45,8 @@ async function migrateToLatest() {
       }),
     }),
   });
+
+  await waitForDatabase(db);
 
   await migrateMigrationsTable(db);
 
