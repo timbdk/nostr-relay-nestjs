@@ -1,17 +1,8 @@
-# Nostr Relay NestJS
-
-[![Coverage Status](https://coveralls.io/repos/github/CodyTseng/nostr-relay-nestjs/badge.svg?branch=master)](https://coveralls.io/github/CodyTseng/nostr-relay-nestjs?branch=master)
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FCodyTseng%2Fnostr-relay-nestjs.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FCodyTseng%2Fnostr-relay-nestjs?ref=badge_shield)
+# Nostr Relay NestJS (Verity Project Fork)
 
 Powered by [nostr-relay](https://github.com/CodyTseng/nostr-relay) & [NestJS](https://nestjs.com/).
 
 A high-performance nostr relay, using PostgreSQL.
-
-If you'd like to help me test the reliability of this relay implementation, you can add wss://nostr-relay.app to your relay list (it's free) 💜⚡️
-
-> **Note:** Please use the released version of this code. The latest version may contain changes to migration scripts and other elements that are not finalized.
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/ooFSnW?referralCode=WYIfFr)
 
 ## Features
 
@@ -101,7 +92,7 @@ Clone the repository and install dependencies
 ```bash
 git clone https://github.com/CodyTseng/nostr-relay-nestjs.git
 cd nostr-relay-nestjs
-npm install
+bun install
 ```
 
 Create `.env` file based on [example.env](./example.env) file
@@ -113,13 +104,13 @@ DATABASE_URL=postgresql://username:password@host:port/database
 Execute migration scripts
 
 ```bash
-npm run migration:run
+bun run migration:run
 ```
 
 Start the server
 
 ```bash
-npm run start
+bun run start
 ```
 ### Running as a systemd service
 It is best practice to not run services as root where possible. If you want to ignore that, remove the User and Group lines from the service file. Otherwise, start with creating a locked down user to run the service as
@@ -160,30 +151,6 @@ Start, stop or check status with `systemctl start|stop|status nostr-relay-nestjs
 
 You can view some simple relay metrics on `/metrics` endpoint.
 
-<img alt="Metrics snapshot" src="https://github.com/CodyTseng/resources/raw/master/nostr-relay-nestjs/img/metrics-snapshot.png" width="520">
-
-## TODO
-
-- [x] Unit test
-- [x] RESTful API
-- [ ] Metrics, Monitoring and Alerting
-- [ ] Support multi nodes
-- [ ] Support for Bitcoin Lightning Network payments
-
-## Architecture
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/CodyTseng/resources/raw/master/nostr-relay-nestjs/img/structure-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://github.com/CodyTseng/resources/raw/master/nostr-relay-nestjs/img/structure-light.png">
-  <img alt="Architecture Diagram" src="https://github.com/CodyTseng/resources/raw/master/nostr-relay-nestjs/img/structure-light.png" height="600">
-</picture>
-
-## Donate
-
-If you like this project, you can buy me a coffee :) ⚡️ codytseng@getalby.com ⚡️
-
 ## License
 
 This project is MIT licensed.
-
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FCodyTseng%2Fnostr-relay-nestjs.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FCodyTseng%2Fnostr-relay-nestjs?ref=badge_large)
