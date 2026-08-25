@@ -1,40 +1,43 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common'
 import {
   Event,
   EventUtils,
   Filter,
   getTimestampInSeconds,
   EventRepository as IEventRepository,
-} from '@nostr-relay/common';
-import { Kysely, sql } from 'kysely';
-import { isNil } from 'lodash';
-import { TEventIdWithScore } from '../../types/event';
-import { isGenericTagName, toGenericTag } from '../../utils';
-import { EventSearchRepository } from './event-search.repository';
-import { KyselyDb } from './kysely-db';
-import { Database, EventRow } from './types';
+} from '@nostr-relay/common'
+import { Kysely, sql } from 'kysely'
+import { isNil } from 'lodash'
+import { TEventIdWithScore } from '../../types/event'
+import { isGenericTagName, toGenericTag } from '../../utils'
+import { EventSearchRepository } from './event-search.repository'
+import { KyselyDb } from './kysely-db'
+import { Database, EventRow } from './types'
 
 @Injectable()
 export class EventRepository extends IEventRepository {
-  private readonly db: Kysely<Database>;
+  private readonly db: Kysely<Database>
 
   constructor(
     kyselyDb: KyselyDb,
     private readonly eventSearchRepository: EventSearchRepository,
   ) {
-    super();
-    this.db = kyselyDb.getDb();
+    super()
+    this.db = kyselyDb.getDb()
   }
 
   isSearchSupported(): boolean {
-    return true;
+    return true
   }
 
-  async upsert(event: Event) {
-    const author = EventUtils.getAuthor(event);
-    const expiredAt = EventUtils.extractExpirationTimestamp(event);
-    const dTagValue = EventUtils.extractDTagValue(event);
-    const genericTags = this.extractGenericTagsFrom(event);
+  async upsert(event: any) {
+    const uid = event.uid ?? event.pubkey
+    const author = uid
+    const kid = event.kid ?? null
+    const key = event.key ?? null
+    const expiredAt = EventUtils.extractExpirationTimestamp(event)
+    const dTagValue = EventUtils.extractDTagValue(event)
+    const genericTags = this.extractGenericTagsFrom(event)
     try {
       const { numInsertedOrUpdatedRows } = await this.db
         .transaction()
@@ -43,7 +46,7 @@ export class EventRepository extends IEventRepository {
             .insertInto('events')
             .values({
               id: event.id,
-              pubkey: event.pubkey,
+              pubkey: uid,
               author,
               kind: event.kind,
               created_at: event.created_at,
@@ -53,6 +56,8 @@ export class EventRepository extends IEventRepository {
               sig: event.sig,
               expired_at: expiredAt,
               d_tag_value: dTagValue,
+              kid,
+              key,
               create_date: 'NOW()',
             })
             .onConflict((oc) =>
@@ -62,12 +67,15 @@ export class EventRepository extends IEventRepository {
                 .doUpdateSet({
                   id: (eb) => eb.ref('excluded.id'),
                   pubkey: (eb) => eb.ref('excluded.pubkey'),
+                  author: (eb) => eb.ref('excluded.author'),
                   created_at: (eb) => eb.ref('excluded.created_at'),
                   tags: (eb) => eb.ref('excluded.tags'),
                   content: (eb) => eb.ref('excluded.content'),
                   sig: (eb) => eb.ref('excluded.sig'),
                   expired_at: (eb) => eb.ref('excluded.expired_at'),
                   generic_tags: (eb) => eb.ref('excluded.generic_tags'),
+                  kid: (eb) => eb.ref('excluded.kid'),
+                  key: (eb) => eb.ref('excluded.key'),
                   create_date: (eb) => eb.ref('excluded.create_date'),
                 })
                 .where((eb) =>
@@ -84,17 +92,17 @@ export class EventRepository extends IEventRepository {
                   ]),
                 ),
             )
-            .executeTakeFirst();
+            .executeTakeFirst()
 
           if (eventInsertResult.numInsertedOrUpdatedRows === BigInt(0)) {
-            return eventInsertResult;
+            return eventInsertResult
           }
 
           if (genericTags.length > 0) {
             await trx
               .deleteFrom('generic_tags')
               .where('event_id', '=', event.id)
-              .execute();
+              .execute()
 
             await trx
               .insertInto('generic_tags')
@@ -107,14 +115,14 @@ export class EventRepository extends IEventRepository {
                   created_at: event.created_at,
                 })),
               )
-              .executeTakeFirst();
+              .executeTakeFirst()
           }
 
-          return eventInsertResult;
-        });
+          return eventInsertResult
+        })
 
       if (numInsertedOrUpdatedRows === BigInt(0)) {
-        return { success: true, isDuplicate: true };
+        return { success: true, isDuplicate: true }
       }
 
       // replaceable event
@@ -123,7 +131,7 @@ export class EventRepository extends IEventRepository {
           author,
           event.kind,
           dTagValue,
-        );
+        )
       }
 
       await this.eventSearchRepository.add(event, {
@@ -131,34 +139,54 @@ export class EventRepository extends IEventRepository {
         genericTags,
         expiredAt,
         dTagValue,
-      });
+      })
 
-      return { success: true, isDuplicate: false };
-    } catch (error) {
+      return { success: true, isDuplicate: false }
+    } catch (error: any) {
       if (error.code === '23505') {
         // 23505 is unique_violation
-        return { success: true, isDuplicate: true };
+        return { success: true, isDuplicate: true }
       }
-      throw error;
+      throw error
     }
   }
 
   async find(filter: Filter): Promise<Event[]> {
-    const limit = this.getLimitFrom(filter);
-    if (limit === 0) return [];
+    const limit = this.getLimitFrom(filter)
+    if (limit === 0) return []
 
     if (filter.search) {
-      return this.eventSearchRepository.find(filter);
+      return this.eventSearchRepository.find(filter)
     }
 
-    const genericTagsCollection = this.extractGenericTagsCollectionFrom(filter);
+    const mapRowToEvent = (row: any): Event => {
+      const ev: any = {
+        id: row.id,
+        pubkey: row.pubkey,
+        uid: row.pubkey,
+        kind: row.kind,
+        tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags,
+        content: row.content,
+        sig: row.sig,
+        created_at: Number(row.created_at),
+      }
+      if (row.kid) {
+        ev.kid = row.kid
+      }
+      if (row.key) {
+        ev.key = row.key
+      }
+      return ev as Event
+    }
+
+    const genericTagsCollection = this.extractGenericTagsCollectionFrom(filter)
     if (!filter.ids?.length && genericTagsCollection.length) {
       // too complex query
       if (genericTagsCollection.length > 2) {
-        return [];
+        return []
       }
 
-      return await this.createGenericTagsSelectQuery(
+      const rows = await this.createGenericTagsSelectQuery(
         filter,
         genericTagsCollection[0],
         genericTagsCollection[1],
@@ -171,32 +199,38 @@ export class EventRepository extends IEventRepository {
           'e.content',
           'e.sig',
           'e.created_at',
+          'e.kid',
+          'e.key',
         ])
         .limit(limit)
-        .execute();
+        .execute()
+
+      return rows.map(mapRowToEvent)
     }
 
-    return await this.createSelectQuery(filter)
-      .select(['id', 'pubkey', 'kind', 'tags', 'content', 'sig', 'created_at'])
+    const rows = await this.createSelectQuery(filter)
+      .select(['id', 'pubkey', 'kind', 'tags', 'content', 'sig', 'created_at', 'kid', 'key'])
       .limit(limit)
-      .execute();
+      .execute()
+
+    return rows.map(mapRowToEvent)
   }
 
   async findTopIds(filter: Filter): Promise<TEventIdWithScore[]> {
-    const limit = this.getLimitFrom(filter, 1000);
-    if (limit === 0) return [];
+    const limit = this.getLimitFrom(filter, 1000)
+    if (limit === 0) return []
 
     if (filter.search) {
-      return this.eventSearchRepository.findTopIds(filter);
+      return this.eventSearchRepository.findTopIds(filter)
     }
 
-    let partialEvents: Pick<EventRow, 'id' | 'created_at'>[] = [];
+    let partialEvents: Pick<EventRow, 'id' | 'created_at'>[] = []
 
-    const genericTagsCollection = this.extractGenericTagsCollectionFrom(filter);
+    const genericTagsCollection = this.extractGenericTagsCollectionFrom(filter)
     if (!filter.ids?.length && genericTagsCollection.length) {
       // too complex query
       if (genericTagsCollection.length > 2) {
-        return [];
+        return []
       }
 
       partialEvents = await this.createGenericTagsSelectQuery(
@@ -206,68 +240,68 @@ export class EventRepository extends IEventRepository {
       )
         .select(['e.id', 'e.created_at'])
         .limit(limit)
-        .execute();
+        .execute()
     } else {
       partialEvents = await this.createSelectQuery(filter)
         .select(['id', 'created_at'])
         .limit(limit)
-        .execute();
+        .execute()
     }
 
     // TODO: algorithm to calculate score
     return partialEvents.map((event) => ({
       id: event.id,
       score: event.created_at,
-    }));
+    }))
   }
 
   async deleteExpiredEvents() {
     const result = await this.db
       .deleteFrom('events')
       .where('expired_at', '<', getTimestampInSeconds())
-      .executeTakeFirst();
-    return parseInt(result.numDeletedRows.toString());
+      .executeTakeFirst()
+    return parseInt(result.numDeletedRows.toString())
   }
 
   async destroy() {
-    await this.db.destroy();
+    await this.db.destroy()
   }
 
   private createSelectQuery(filter: Filter) {
-    let query = this.db.selectFrom('events');
+    let query = this.db.selectFrom('events')
 
     if (filter.ids?.length) {
-      query = query.where('id', 'in', filter.ids);
+      query = query.where('id', 'in', filter.ids)
     }
 
     if (filter.since) {
-      query = query.where('created_at', '>=', filter.since);
+      query = query.where('created_at', '>=', filter.since)
     }
 
     if (filter.until) {
-      query = query.where('created_at', '<=', filter.until);
+      query = query.where('created_at', '<=', filter.until)
     }
 
     if (filter.authors?.length) {
-      query = query.where('author', 'in', filter.authors);
+      query = query.where('author', 'in', filter.authors)
     }
 
     if (filter.kinds?.length) {
-      query = query.where('kind', 'in', filter.kinds);
+      query = query.where('kind', 'in', filter.kinds)
     }
 
-    const genericTagsCollection = this.extractGenericTagsCollectionFrom(filter);
+    const genericTagsCollection = this.extractGenericTagsCollectionFrom(filter)
     if (genericTagsCollection.length) {
       genericTagsCollection.forEach((genericTags) => {
         query = query.where(
           'generic_tags',
           '&&',
           sql<string[]>`ARRAY[${sql.join(genericTags)}]`,
-        );
-      });
+        )
+      })
     }
 
-    return query.orderBy('created_at desc');
+    return query.orderBy('created_at desc')
   }
 
   private createGenericTagsSelectQuery(
@@ -278,58 +312,58 @@ export class EventRepository extends IEventRepository {
     let query = this.db
       .selectFrom('generic_tags as g')
       .distinctOn(['g.event_id', 'g.created_at'])
-      .rightJoin('events as e', 'e.id', 'g.event_id');
+      .rightJoin('events as e', 'e.id', 'g.event_id')
 
     if (secondGenericTagsFilter?.length) {
       query = query.innerJoin('generic_tags as g2', (join) =>
         join
           .onRef('g2.event_id', '=', 'g.event_id')
           .on('g2.tag', 'in', secondGenericTagsFilter),
-      );
+      )
     }
 
-    query = query.where('g.tag', 'in', firstGenericTagsFilter);
+    query = query.where('g.tag', 'in', firstGenericTagsFilter)
 
     if (filter.since) {
-      query = query.where('g.created_at', '>=', filter.since);
+      query = query.where('g.created_at', '>=', filter.since)
     }
 
     if (filter.until) {
-      query = query.where('g.created_at', '<=', filter.until);
+      query = query.where('g.created_at', '<=', filter.until)
     }
 
     if (filter.authors?.length) {
-      query = query.where('g.author', 'in', filter.authors);
+      query = query.where('g.author', 'in', filter.authors)
     }
 
     if (filter.kinds?.length) {
-      query = query.where('g.kind', 'in', filter.kinds);
+      query = query.where('g.kind', 'in', filter.kinds)
     }
 
-    return query.orderBy('g.created_at desc');
+    return query.orderBy('g.created_at desc')
   }
 
   private getLimitFrom(filter: Filter, defaultLimit = 100) {
-    return Math.min(isNil(filter.limit) ? defaultLimit : filter.limit, 1000);
+    return Math.min(isNil(filter.limit) ? defaultLimit : filter.limit, 1000)
   }
 
   private extractGenericTagsCollectionFrom(filter: Filter): string[][] {
     return Object.keys(filter)
       .filter((key) => key.startsWith('#') && filter[key].length > 0)
       .map((key) => {
-        const tagName = key[1];
-        return filter[key].map((v: string) => toGenericTag(tagName, v));
+        const tagName = key[1]
+        return filter[key].map((v: string) => toGenericTag(tagName, v))
       })
-      .sort((a, b) => a.length - b.length);
+      .sort((a, b) => a.length - b.length)
   }
 
   private extractGenericTagsFrom(event: Event): string[] {
-    const genericTagSet = new Set<string>();
+    const genericTagSet = new Set<string>()
     event.tags.forEach(([tagName, tagValue]) => {
       if (isGenericTagName(tagName)) {
-        genericTagSet.add(toGenericTag(tagName, tagValue));
+        genericTagSet.add(toGenericTag(tagName, tagValue))
       }
-    });
-    return [...genericTagSet];
+    })
+    return [...genericTagSet]
   }
 }

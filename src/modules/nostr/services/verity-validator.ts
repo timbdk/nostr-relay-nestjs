@@ -33,11 +33,19 @@ export class VerityValidator extends Validator {
     const type = msgArray[0]
     if (type === 'EVENT') {
       if (msgArray.length < 2) throw new Error('Invalid EVENT message')
-      return ['EVENT', msgArray[1]] as IncomingMessage
+      const event = msgArray[1]
+      if (event && typeof event === 'object' && !event.pubkey && event.uid) {
+        event.pubkey = event.uid
+      }
+      return ['EVENT', event] as IncomingMessage
     }
     if (type === 'AUTH') {
       if (msgArray.length < 2) throw new Error('Invalid AUTH message')
-      return ['AUTH', msgArray[1]] as IncomingMessage
+      const event = msgArray[1]
+      if (event && typeof event === 'object' && !event.pubkey && event.uid) {
+        event.pubkey = event.uid
+      }
+      return ['AUTH', event] as IncomingMessage
     }
 
     return super.validateIncomingMessage(message)
@@ -79,12 +87,21 @@ export class VerityValidator extends Validator {
       throw new Error('Event must be an object')
     }
 
+    if (!event.pubkey && event.uid) {
+      event.pubkey = event.uid
+    }
+
     const result = this.registry.checkStructural(event)
     if (!result.ok) {
       const err = result.errors[0]
       throw new Error(`invalid: [${err.code}]: ${err.message}`)
     }
 
-    return { event: result.event as Event, variant: result.variant }
+    const resEvent = result.event as any
+    if (resEvent && !resEvent.pubkey && resEvent.uid) {
+      resEvent.pubkey = resEvent.uid
+    }
+
+    return { event: resEvent as Event, variant: result.variant }
   }
 }

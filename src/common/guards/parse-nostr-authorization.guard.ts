@@ -1,78 +1,78 @@
-import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { EventUtils } from '@nostr-relay/common';
-import { VerityValidator } from '../../modules/nostr/services/verity-validator';
-import { Request } from 'express';
-import { URL } from 'url';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
+import { EventUtils } from '@nostr-relay/common'
+import { VerityValidator } from '../../modules/nostr/services/verity-validator'
+import { Request } from 'express'
+import { URL } from 'url'
 
 @Injectable()
 export class ParseNostrAuthorizationGuard implements CanActivate {
-  private readonly validator: VerityValidator;
-  private readonly hostname: string | undefined;
+  private readonly validator: VerityValidator
+  private readonly hostname: string | undefined
 
   constructor(configService: ConfigService) {
-    this.hostname = configService.get('hostname');
-    const prefix = configService.get('serializationPrefix');
-    this.validator = new VerityValidator(prefix);
+    this.hostname = configService.get('hostname')
+    const prefix = configService.get('serializationPrefix')
+    this.validator = new VerityValidator(prefix)
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     if (!this.hostname) {
-      return true;
+      return true
     }
 
-    const request = context.switchToHttp().getRequest<Request>();
-    const authorization = request.headers.authorization;
+    const request = context.switchToHttp().getRequest<Request>()
+    const authorization = request.headers.authorization
     if (!authorization) {
-      return true;
+      return true
     }
 
     try {
-      const [type, token] = authorization.split(' ');
+      const [type, token] = authorization.split(' ')
       if (type !== 'Nostr') {
-        return true;
+        return true
       }
       const decoded = JSON.stringify(
         Buffer.from(token, 'base64').toString('utf-8'),
-      );
-      const event = (await this.validator.validateAndResolve(JSON.parse(decoded))).event;
-      const validateErrorMsg = EventUtils.validate(event);
+      )
+      const event = (await this.validator.validateAndResolve(JSON.parse(decoded))).event
+      const validateErrorMsg = EventUtils.validate(event)
       if (validateErrorMsg) {
-        return true;
+        return true
       }
 
       if (Math.abs(event.created_at - Math.floor(Date.now() / 1000)) > 60) {
-        return true;
+        return true
       }
 
       if (event.kind !== 27235) {
-        return true;
+        return true
       }
 
-      const uTagValue = event.tags.find(([tagName]) => tagName === 'u')?.[1];
+      const uTagValue = event.tags.find(([tagName]) => tagName === 'u')?.[1]
       if (!uTagValue) {
-        return true;
+        return true
       }
-      const url = new URL(uTagValue);
+      const url = new URL(uTagValue)
       if (url.hostname !== this.hostname || url.pathname !== request.url) {
-        return true;
+        return true
       }
 
       const methodTagValue = event.tags.find(
         ([tagName]) => tagName === 'method',
-      )?.[1];
+      )?.[1]
       if (
         !methodTagValue ||
         methodTagValue.toUpperCase() !== request.method.toUpperCase()
       ) {
-        return true;
+        return true
       }
 
-      request.pubkey = event.pubkey;
+      request.pubkey = (event as any).uid ?? event.pubkey
     } catch {
       // do nothing
     }
 
-    return true;
+    return true
   }
 }

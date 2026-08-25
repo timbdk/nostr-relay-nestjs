@@ -213,9 +213,10 @@ export class EventSearchRepository implements OnApplicationBootstrap {
       dTagValue,
     }: AdditionalEventDocumentFields,
   ): EventDocument {
+    const uid = (event as any).uid ?? event.pubkey
     return {
       id: event.id,
-      pubkey: event.pubkey,
+      pubkey: uid,
       createdAt: event.created_at,
       kind: event.kind,
       tags: event.tags,
@@ -225,19 +226,20 @@ export class EventSearchRepository implements OnApplicationBootstrap {
       expiredAt,
       author,
       dTagValue,
-    };
+    }
   }
 
   private toEvent(eventDocument: EventDocument): Event {
     return {
       id: eventDocument.id,
       pubkey: eventDocument.pubkey,
+      uid: eventDocument.pubkey,
       created_at: eventDocument.createdAt,
       kind: eventDocument.kind,
       tags: eventDocument.tags,
       content: eventDocument.content,
       sig: eventDocument.sig,
-    };
+    } as any
   }
 
   private extractGenericTagsCollectionFrom(filter: Filter): string[][] {

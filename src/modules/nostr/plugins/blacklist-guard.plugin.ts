@@ -2,22 +2,23 @@ import {
   BeforeHandleEventPlugin,
   BeforeHandleEventResult,
   Event,
-} from '@nostr-relay/common';
+} from '@nostr-relay/common'
 
 export class BlacklistGuardPlugin implements BeforeHandleEventPlugin {
-  private readonly blacklist: Set<string>;
+  private readonly blacklist: Set<string>
 
   constructor(blacklist: string[]) {
-    this.blacklist = new Set(blacklist);
+    this.blacklist = new Set(blacklist)
   }
 
   beforeHandleEvent(event: Event): BeforeHandleEventResult {
-    if (this.blacklist.has(event.pubkey)) {
+    const author = (event as any).uid ?? event.pubkey
+    if (this.blacklist.has(author)) {
       return {
         canHandle: false,
         message: 'blocked: you are banned from posting here',
-      };
+      }
     }
-    return { canHandle: true };
+    return { canHandle: true }
   }
 }
