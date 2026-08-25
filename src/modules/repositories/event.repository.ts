@@ -13,6 +13,7 @@ import { isGenericTagName, toGenericTag } from '../../utils'
 import { EventSearchRepository } from './event-search.repository'
 import { KyselyDb } from './kysely-db'
 import { Database, EventRow } from './types'
+import { buildEventRow, buildGenericTagRows, extractGenericTagsFrom } from './event-row-mapping'
 
 @Injectable()
 export class EventRepository extends IEventRepository {
@@ -31,13 +32,11 @@ export class EventRepository extends IEventRepository {
   }
 
   async upsert(event: any) {
-    const uid = event.uid ?? event.pubkey
-    const author = uid
-    const kid = event.kid ?? null
-    const key = event.key ?? null
-    const expiredAt = EventUtils.extractExpirationTimestamp(event)
-    const dTagValue = EventUtils.extractDTagValue(event)
-    const genericTags = this.extractGenericTagsFrom(event)
+    const row = buildEventRow(event)
+    const author = row.author
+    const genericTags = row.generic_tags
+    const expiredAt = row.expired_at
+    const dTagValue = row.d_tag_value
     try {
       const { numInsertedOrUpdatedRows } = await this.db
         .transaction()
@@ -45,19 +44,7 @@ export class EventRepository extends IEventRepository {
           const eventInsertResult = await trx
             .insertInto('events')
             .values({
-              id: event.id,
-              pubkey: uid,
-              author,
-              kind: event.kind,
-              created_at: event.created_at,
-              tags: JSON.stringify(event.tags),
-              generic_tags: genericTags,
-              content: event.content,
-              sig: event.sig,
-              expired_at: expiredAt,
-              d_tag_value: dTagValue,
-              kid,
-              key,
+              ...row,
               create_date: 'NOW()',
             })
             .onConflict((oc) =>
@@ -106,15 +93,7 @@ export class EventRepository extends IEventRepository {
 
             await trx
               .insertInto('generic_tags')
-              .values(
-                genericTags.map((tag) => ({
-                  tag,
-                  event_id: event.id,
-                  kind: event.kind,
-                  author,
-                  created_at: event.created_at,
-                })),
-              )
+              .values(buildGenericTagRows(event, genericTags))
               .executeTakeFirst()
           }
 
@@ -358,12 +337,6 @@ export class EventRepository extends IEventRepository {
   }
 
   private extractGenericTagsFrom(event: Event): string[] {
-    const genericTagSet = new Set<string>()
-    event.tags.forEach(([tagName, tagValue]) => {
-      if (isGenericTagName(tagName)) {
-        genericTagSet.add(toGenericTag(tagName, tagValue))
-      }
-    })
-    return [...genericTagSet]
+    return extractGenericTagsFrom(event)
   }
 }

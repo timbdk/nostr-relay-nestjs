@@ -18,7 +18,7 @@ import { OrGuard } from '@nostr-relay/or-guard'
 import { PowGuard } from '@nostr-relay/pow-guard'
 import { Throttler } from '@nostr-relay/throttler'
 import { VerityValidator } from './verity-validator'
-import { verifyVerityEventSync } from './verity-crypto-validator'
+import { verifyVerityEventAsync, verifyVerityEventSync } from './verity-crypto-validator'
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino'
 import { Config } from 'src/config'
 import { MessageHandlingConfig } from 'src/config/message-handling.config'
@@ -493,13 +493,26 @@ export class NostrRelayService implements OnApplicationShutdown {
         }
 
         // Step 2: Crypto verification (before any content inspection)
-        const cryptoError = verifyVerityEventSync(event, this.configService.get('serializationPrefix'))
+        let chainLookup: ((kid: string) => Promise<any>) | undefined
+        if (event.kid) {
+          chainLookup = async (kid: string) => {
+            const results = await this.findEvents([{ ids: [kid], limit: 1 }])
+            return results[0] ?? null
+          }
+        }
+        const cryptoError = await verifyVerityEventAsync(
+          event,
+          this.configService.get('serializationPrefix'),
+          chainLookup,
+        )
         if (cryptoError) {
+          this.logger.warn(`[EVENT] Rejected event ${event.id} (kind ${event.kind}) due to cryptoError: ${cryptoError}`)
           return client.send(buildRejectionMessage(cryptoError))
         }
 
         // Step 3: Connection-level policies (Kind 415, NIP-46)
         if (event.kind === 415 && !isTrustedConnection) {
+          this.logger.warn(`[EVENT] Rejected Kind 415 from untrusted connection (auth: ${authenticatedPubkey})`)
           return client.send(buildRejectionMessage(
             'restricted: Kind 415 requires trusted connection',
           ))
@@ -540,6 +553,7 @@ export class NostrRelayService implements OnApplicationShutdown {
         if (!checkResult.ok) {
           const firstError = checkResult.errors[0]
           const reason = `invalid: [${firstError.code}]: ${firstError.message}`
+          this.logger.warn(`[EVENT] Rejected event ${event.id} (kind ${event.kind}) due to validation: ${reason}`)
           return client.send(buildRejectionMessage(reason))
         }
       }
