@@ -1,7 +1,7 @@
-import { z } from 'zod';
+import { z } from 'zod'
 
 export const arraySchema = <T extends z.ZodType>(schema: T) =>
-  z.preprocess((v) => (Array.isArray(v) ? v : [v]), z.array(schema));
+  z.preprocess((v) => (Array.isArray(v) ? v : [v]), z.array(schema))
 
 export const EnvironmentSchema = z.object({
   DATABASE_URL: z.string(),
@@ -9,6 +9,7 @@ export const EnvironmentSchema = z.object({
     (v) => parseInt(String(v), 10),
     z.number().int().positive(),
   ),
+  VERITY_PLATFORM_ID: z.string().regex(/^[0-9a-f]{64}$/),
 
   /*==== optional ====*/
   HOSTNAME: z.string().optional(),
@@ -18,10 +19,6 @@ export const EnvironmentSchema = z.object({
   PORT: z.number().int().positive().optional(),
   GIT_COMMIT_SHA: z.string().optional(),
   DATABASE_MAX_CONNECTIONS: z.number().int().positive().optional(),
-
-  TRUSTED_SIGNER_PUBKEY: arraySchema(
-    z.string().regex(/^[0-9a-f]{64}$/),
-  ).optional(),
 
   LOG_DIR: z.string().optional(),
   LOG_LEVEL: z.string().optional(),
@@ -83,46 +80,46 @@ export const EnvironmentSchema = z.object({
   WOT_SKIP_FILTERS: arraySchema(
     z.any(), // TODO: add filter schema
   ).optional(),
-});
-export type Environment = z.infer<typeof EnvironmentSchema>;
+})
+export type Environment = z.infer<typeof EnvironmentSchema>
 
 export function validateEnvironment(env: Record<string, unknown>) {
-  return EnvironmentSchema.parse(preprocess(env));
+  return EnvironmentSchema.parse(preprocess(env))
 }
 
 function preprocess(env: Record<string, unknown>) {
   return Object.entries(env).reduce((acc, [key, value]) => {
     if (typeof value !== 'string') {
-      return acc;
+      return acc
     }
 
     return {
       ...acc,
       [key]: tryToParse(value),
-    };
-  }, {});
+    }
+  }, {})
 }
 
 function tryToParse(value: string) {
   if (/^\d+$/.test(value)) {
-    return parseInt(value, 10);
+    return parseInt(value, 10)
   }
   if (value === 'true' || value === 'false') {
-    return value === 'true';
+    return value === 'true'
   }
 
   try {
-    const json = JSON.parse(value);
+    const json = JSON.parse(value)
     if (typeof json === 'object') {
-      return json;
+      return json
     }
   } catch {
     // ignore
   }
 
   if (value.includes(',')) {
-    return value.split(',').map((v) => tryToParse(v.trim()));
+    return value.split(',').map((v) => tryToParse(v.trim()))
   }
 
-  return value;
+  return value
 }

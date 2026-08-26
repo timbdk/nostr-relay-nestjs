@@ -44,8 +44,7 @@ export function extractGenericTagsFrom(event: { tags?: string[][] }): string[] {
 
 export interface EventRowData {
   id: string
-  pubkey: string
-  author: string
+  uid: string
   kind: number
   created_at: number
   tags: string
@@ -62,13 +61,12 @@ export interface GenericTagRowData {
   tag: string
   event_id: string
   kind: number
-  author: string
+  uid: string
   created_at: number
 }
 
 export function buildEventRow(event: any): EventRowData {
   const uid = event.uid ?? event.pubkey
-  const author = uid
   const kid = event.kid ?? null
   const key = event.key ?? null
   const expiredAt = extractExpirationTimestamp(event)
@@ -78,8 +76,7 @@ export function buildEventRow(event: any): EventRowData {
 
   return {
     id: event.id,
-    pubkey: uid,
-    author,
+    uid,
     kind: event.kind,
     created_at: event.created_at,
     tags,
@@ -95,12 +92,12 @@ export function buildEventRow(event: any): EventRowData {
 
 export function buildGenericTagRows(event: any, genericTags?: string[]): GenericTagRowData[] {
   const tags = genericTags ?? extractGenericTagsFrom(event)
-  const author = event.uid ?? event.pubkey
+  const uid = event.uid ?? event.pubkey
   return tags.map((tag) => ({
     tag,
     event_id: event.id,
     kind: event.kind,
-    author,
+    uid,
     created_at: event.created_at
   }))
 }

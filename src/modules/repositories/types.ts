@@ -8,8 +8,7 @@ export interface Database {
 
 interface EventTable {
   id: string
-  pubkey: string
-  author: string
+  uid: string
   created_at: number
   kind: number
   tags: JSONColumnType<string[][]>
@@ -27,7 +26,7 @@ export type EventRow = Selectable<EventTable>
 interface GenericTagTable {
   id: Generated<number>
   tag: string
-  author: string
+  uid: string
   kind: number
   event_id: string
   created_at: number

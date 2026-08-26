@@ -1,21 +1,21 @@
-import { cacheConfig } from './cache.config';
-import { databaseConfig } from './database.config';
-import { validateEnvironment } from './environment';
-import { limitConfig } from './limit.config';
-import { loggerConfig } from './logger.config';
-import { meiliSearchConfig } from './meili-search.config';
-import { messageHandlingConfig } from './message-handling.config';
-import { relayInfoConfig } from './relay-info.config';
-import { throttlerConfig } from './throttler.config';
-import { wotConfig } from './wot.config';
+import { cacheConfig } from './cache.config'
+import { databaseConfig } from './database.config'
+import { validateEnvironment } from './environment'
+import { limitConfig } from './limit.config'
+import { loggerConfig } from './logger.config'
+import { meiliSearchConfig } from './meili-search.config'
+import { messageHandlingConfig } from './message-handling.config'
+import { relayInfoConfig } from './relay-info.config'
+import { throttlerConfig } from './throttler.config'
+import { wotConfig } from './wot.config'
 
 export function config() {
-  const env = validateEnvironment(process.env);
+  const env = validateEnvironment(process.env)
   return {
     hostname: env.HOSTNAME ?? env.DOMAIN,
     port: env.PORT ?? 3000,
     relayUrl: env.RELAY_URL,
-    trustedSignerPubkey: env.TRUSTED_SIGNER_PUBKEY,
+    platformId: env.VERITY_PLATFORM_ID,
     environment: env.NODE_ENV,
     database: databaseConfig(env),
     meiliSearch: meiliSearchConfig(env),
@@ -27,6 +27,6 @@ export function config() {
     messageHandling: messageHandlingConfig(env),
     wot: wotConfig(env),
     serializationPrefix: env.VERITY_SERIALIZATION_PREFIX,
-  };
+  }
 }
-export type Config = ReturnType<typeof config>;
+export type Config = ReturnType<typeof config>

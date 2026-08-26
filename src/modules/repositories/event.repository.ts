@@ -1,11 +1,20 @@
-import { Injectable } from '@nestjs/common'
+/**
+ * Purpose: PostgreSQL database repository for storing, indexing, and querying Nostr events.
+ * Behavior: Provides transactional upsert with replaceable-event semantics and generic tag indexing;
+ *           emits synchronous post-insert notifications for cache synchronization.
+ * Usage: Injected into NostrRelay core and consumed by NostrRelayService and ChainCacheService.
+ */
+
+// ── Imports ──────────────────────────────────────────────────────────────────
+
+import { Injectable, Optional } from '@nestjs/common'
 import {
   Event,
-  EventUtils,
   Filter,
   getTimestampInSeconds,
   EventRepository as IEventRepository,
 } from '@nostr-relay/common'
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino'
 import { Kysely, sql } from 'kysely'
 import { isNil } from 'lodash'
 import { TEventIdWithScore } from '../../types/event'
@@ -15,13 +24,19 @@ import { KyselyDb } from './kysely-db'
 import { Database, EventRow } from './types'
 import { buildEventRow, buildGenericTagRows, extractGenericTagsFrom } from './event-row-mapping'
 
+// ── Repository Class ─────────────────────────────────────────────────────────
+
+export type EventInsertListener = (event: any) => void
+
 @Injectable()
 export class EventRepository extends IEventRepository {
   private readonly db: Kysely<Database>
+  private readonly insertListeners = new Set<EventInsertListener>()
 
   constructor(
     kyselyDb: KyselyDb,
     private readonly eventSearchRepository: EventSearchRepository,
+    @Optional() @InjectPinoLogger(EventRepository.name) private readonly logger?: PinoLogger,
   ) {
     super()
     this.db = kyselyDb.getDb()
@@ -31,12 +46,36 @@ export class EventRepository extends IEventRepository {
     return true
   }
 
+  /**
+   * Register a synchronous listener called immediately after a non-duplicate event insertion.
+   * Consumed by ChainCacheService for write-path cache updates before OK ack.
+   */
+  onInsert(listener: EventInsertListener): () => void {
+    this.insertListeners.add(listener)
+    return () => {
+      this.insertListeners.delete(listener)
+    }
+  }
+
+  private notifyInsert(event: any): void {
+    for (const listener of this.insertListeners) {
+      try {
+        listener(event)
+      } catch (error) {
+        this.logger?.error({ error, eventId: event?.id }, '[REPOSITORY] Error in event insert listener')
+      }
+    }
+  }
+
+  // ── Upsert ─────────────────────────────────────────────────────────────────
+
   async upsert(event: any) {
     const row = buildEventRow(event)
-    const author = row.author
+    const uid = row.uid
     const genericTags = row.generic_tags
     const expiredAt = row.expired_at
     const dTagValue = row.d_tag_value
+
     try {
       const { numInsertedOrUpdatedRows } = await this.db
         .transaction()
@@ -49,12 +88,11 @@ export class EventRepository extends IEventRepository {
             })
             .onConflict((oc) =>
               oc
-                .columns(['author', 'kind', 'd_tag_value'])
+                .columns(['uid', 'kind', 'd_tag_value'])
                 .where('d_tag_value', 'is not', null)
                 .doUpdateSet({
                   id: (eb) => eb.ref('excluded.id'),
-                  pubkey: (eb) => eb.ref('excluded.pubkey'),
-                  author: (eb) => eb.ref('excluded.author'),
+                  uid: (eb) => eb.ref('excluded.uid'),
                   created_at: (eb) => eb.ref('excluded.created_at'),
                   tags: (eb) => eb.ref('excluded.tags'),
                   content: (eb) => eb.ref('excluded.content'),
@@ -107,18 +145,21 @@ export class EventRepository extends IEventRepository {
       // replaceable event
       if (dTagValue !== null) {
         await this.eventSearchRepository.deleteReplaceableEvents(
-          author,
+          uid,
           event.kind,
           dTagValue,
         )
       }
 
       await this.eventSearchRepository.add(event, {
-        author,
+        author: uid,
         genericTags,
         expiredAt,
         dTagValue,
       })
+
+      // Synchronously notify listeners (ChainCacheService) of accepted new event
+      this.notifyInsert(event)
 
       return { success: true, isDuplicate: false }
     } catch (error: any) {
@@ -129,6 +170,8 @@ export class EventRepository extends IEventRepository {
       throw error
     }
   }
+
+  // ── Querying ───────────────────────────────────────────────────────────────
 
   async find(filter: Filter): Promise<Event[]> {
     const limit = this.getLimitFrom(filter)
@@ -141,8 +184,8 @@ export class EventRepository extends IEventRepository {
     const mapRowToEvent = (row: any): Event => {
       const ev: any = {
         id: row.id,
-        pubkey: row.pubkey,
-        uid: row.pubkey,
+        pubkey: row.uid,
+        uid: row.uid,
         kind: row.kind,
         tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags,
         content: row.content,
@@ -172,7 +215,7 @@ export class EventRepository extends IEventRepository {
       )
         .select([
           'e.id',
-          'e.pubkey',
+          'e.uid',
           'e.kind',
           'e.tags',
           'e.content',
@@ -188,7 +231,7 @@ export class EventRepository extends IEventRepository {
     }
 
     const rows = await this.createSelectQuery(filter)
-      .select(['id', 'pubkey', 'kind', 'tags', 'content', 'sig', 'created_at', 'kid', 'key'])
+      .select(['id', 'uid', 'kind', 'tags', 'content', 'sig', 'created_at', 'kid', 'key'])
       .limit(limit)
       .execute()
 
@@ -262,7 +305,7 @@ export class EventRepository extends IEventRepository {
     }
 
     if (filter.authors?.length) {
-      query = query.where('author', 'in', filter.authors)
+      query = query.where('uid', 'in', filter.authors)
     }
 
     if (filter.kinds?.length) {
@@ -312,7 +355,7 @@ export class EventRepository extends IEventRepository {
     }
 
     if (filter.authors?.length) {
-      query = query.where('g.author', 'in', filter.authors)
+      query = query.where('g.uid', 'in', filter.authors)
     }
 
     if (filter.kinds?.length) {

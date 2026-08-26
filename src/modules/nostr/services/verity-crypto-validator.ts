@@ -1,41 +1,142 @@
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { schnorr } = require('@noble/curves/secp256k1.js')
-import { createHash } from 'crypto'
-import type { Event } from '@nostr-relay/common'
-
 /**
- * Verity event verification using @noble/curves and Node.js crypto.
- *
- * Implements the uniform-path verification skeleton:
- * - 8-slot canonical serialization: [prefix, uid, created_at, kind, tags, content, kid, key]
- * - Self-certifying verification (key carried, uid == H(key))
- * - Chain-verified verification (kid carried, resolves via chainLookup)
- * - Kind 297 genesis self-certification exemption (content.keys.sign, uid == H(sign key))
- *
- * Returns a string on error, undefined on success — matching the EventUtils.validate contract.
+ * Purpose: Cryptographic verification of Verity events according to the PQE Set A uniform path.
+ * Behavior: Validates 8-slot canonical serialization, self-certifying keys, chain-verified keys via
+ *           chain cache lookups, validity windows, delegation scopes, revocations, rotate countersignatures,
+ *           and platform endorsements.
+ * Usage: Consumed by NostrRelayService (asynchronous write gate) and EventUtils.validate (synchronous monkey-patch).
  */
+
+// ── Imports ──────────────────────────────────────────────────────────────────
+
+import { schnorr } from '@noble/curves/secp256k1.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { base64 } from '@scure/base'
+import { createHash } from 'crypto'
+
+// ── Preimage Builders ────────────────────────────────────────────────────────
+
+function canonicalChainContent(content: any): string {
+  const parsed = typeof content === 'string' ? JSON.parse(content) : content
+  return stringifyCanonical(parsed, true)
+}
+
+function stringifyCanonical(val: any, isRoot = false): string {
+  if (val === null || typeof val !== 'object') {
+    return JSON.stringify(val)
+  }
+  if (Array.isArray(val)) {
+    return '[' + val.map((item) => (item === undefined ? 'null' : stringifyCanonical(item, false))).join(',') + ']'
+  }
+  const keys = Object.keys(val)
+    .filter((k) => (isRoot ? k !== 'platform' : true) && val[k] !== undefined)
+    .sort()
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stringifyCanonical(val[k], false)).join(',') + '}'
+}
+
+export function countersignPreimage(
+  identityIdHex: string,
+  newSignKeyHashHex: string | null | undefined,
+  validFrom: number | string
+): string | null {
+  if (!newSignKeyHashHex) return null
+  return `verity:keychain:297:${identityIdHex}:${newSignKeyHashHex}:${validFrom}`
+}
+
+export function endorsementPreimage(identityIdHex: string, variant: string, content: any): string {
+  const canonicalStr = canonicalChainContent(content)
+  const contentHash = bytesToHex(sha256(new TextEncoder().encode(canonicalStr)))
+  return `verity:keychain:297:endorsement:${identityIdHex}:${variant}:${contentHash}`
+}
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+
+export interface ChainLookupContext {
+  platformId?: string
+}
+
+export type ChainLookupFn = (kid: string) => Promise<any> | any
+
+// ── Helper Functions ─────────────────────────────────────────────────────────
+
+function parsePublicKey(keyStr: string): { alg: string; bytes: Uint8Array } | null {
+  if (typeof keyStr !== 'string' || !keyStr) return null
+  try {
+    if (keyStr.includes(':')) {
+      const colonIdx = keyStr.indexOf(':')
+      const alg = keyStr.substring(0, colonIdx)
+      const bytes = base64.decode(keyStr.substring(colonIdx + 1))
+      return { alg, bytes }
+    }
+    if (/^[a-f0-9]{64}$/i.test(keyStr)) {
+      return { alg: 'secp256k1-schnorr', bytes: hexToBytes(keyStr) }
+    }
+    return { alg: 'secp256k1-schnorr', bytes: base64.decode(keyStr) }
+  } catch {
+    return null
+  }
+}
+
+function decodeSignature(sigStr: string): Uint8Array | null {
+  if (typeof sigStr !== 'string' || !sigStr) return null
+  try {
+    if (sigStr.length === 128 && /^[0-9a-fA-F]+$/.test(sigStr)) {
+      return hexToBytes(sigStr)
+    }
+    return base64.decode(sigStr)
+  } catch {
+    return null
+  }
+}
+
+function extractVariant(event: any): 'genesis' | 'rotate' | 'delegate' | 'revoke' | null {
+  if (event.variant) return event.variant
+  const vTag = event.tags?.find((t: string[]) => t[0] === 'v')
+  return vTag?.[1] ?? null
+}
+
+function extractContent(event: any): any {
+  if (typeof event.content === 'string') {
+    try {
+      return JSON.parse(event.content)
+    } catch {
+      return null
+    }
+  }
+  return event.content
+}
+
+// ── Verification Entry Points ────────────────────────────────────────────────
 
 export async function verifyVerityEventAsync(
   event: any,
   serializationPrefix: number,
-  chainLookup?: (kid: string) => Promise<any> | any
+  chainLookup?: ChainLookupFn,
+  context?: ChainLookupContext
 ): Promise<string | undefined> {
-  return verifyVerityEventInternal(event, serializationPrefix, chainLookup, true)
+  return verifyVerityEventInternal(event, serializationPrefix, chainLookup, true, context)
 }
 
 export function verifyVerityEventSync(
   event: any,
   serializationPrefix: number,
-  chainLookup?: (kid: string) => any
+  chainLookup?: ChainLookupFn,
+  context?: ChainLookupContext
 ): string | undefined {
-  return verifyVerityEventInternal(event, serializationPrefix, chainLookup, false) as string | undefined
+  return verifyVerityEventInternal(event, serializationPrefix, chainLookup, false, context) as string | undefined
 }
+
+// ── Main Verification Logic ──────────────────────────────────────────────────
+
+const TRANSPORT_KINDS = new Set([22242, 24133, 24134, 24135])
 
 function verifyVerityEventInternal(
   event: any,
   serializationPrefix: number,
-  chainLookup?: (kid: string) => Promise<any> | any,
-  isAsync = false
+  chainLookup?: ChainLookupFn,
+  isAsync = false,
+  context?: ChainLookupContext
 ): Promise<string | undefined> | (string | undefined) {
   // 1. Basic field format checks
   if (!event || typeof event !== 'object') {
@@ -68,15 +169,41 @@ function verifyVerityEventInternal(
     return 'invalid: content must be a string'
   }
 
-  // 2. Structural constraint: at most one of kid, key
   const hasKid = event.kid !== undefined && event.kid !== null && event.kid !== ''
   const hasKey = event.key !== undefined && event.key !== null && event.key !== ''
 
+  // 2. Structural constraint: at most one of kid, key
   if (hasKid && hasKey) {
     return 'invalid: ambiguous — both kid and key present'
   }
 
-  // 3. ID recompute: 8-slot canonical serialization
+  // 3. Kind-shape rules
+  if (TRANSPORT_KINDS.has(event.kind)) {
+    if (hasKid) return 'invalid: transport kind must not carry kid'
+    if (!hasKey) return 'invalid: transport kind requires key field'
+  }
+
+  const isGenesis =
+    event.kind === 297 &&
+    (event.variant === 'genesis' ||
+      (Array.isArray(event.tags) && event.tags.some((t: string[]) => t[0] === 'v' && t[1] === 'genesis')))
+
+  if (event.kind === 297) {
+    if (isGenesis) {
+      if (hasKid || hasKey) {
+        return 'invalid: Kind 297 genesis must not carry kid or key'
+      }
+    } else {
+      if (hasKey) {
+        return 'invalid: Kind 297 non-genesis must not carry key field'
+      }
+      if (!hasKid) {
+        return 'invalid: Kind 297 non-genesis requires kid'
+      }
+    }
+  }
+
+  // 4. ID recompute: 8-slot canonical serialization
   try {
     const serialized = JSON.stringify([
       serializationPrefix,
@@ -86,7 +213,7 @@ function verifyVerityEventInternal(
       event.tags,
       event.content,
       event.kid ?? '',
-      event.key ?? ''
+      event.key ?? '',
     ])
     const hash = createHash('sha256').update(serialized).digest()
     const computedId = hash.toString('hex')
@@ -99,90 +226,97 @@ function verifyVerityEventInternal(
   }
 
   const idBytes = new Uint8Array(Buffer.from(event.id, 'hex'))
-  const sigBytes = new Uint8Array(Buffer.from(event.sig, 'hex'))
+  const sigBytes = decodeSignature(event.sig)
+  if (!sigBytes) {
+    return 'invalid: signature is wrong'
+  }
 
-  // 4. Dispatch: Self-certifying branch (key present)
+  // 5. Dispatch: Self-certifying branch (key present)
   if (hasKey) {
-    const colonIdx = event.key.indexOf(':')
-    if (colonIdx === -1) {
+    const parsed = parsePublicKey(event.key)
+    if (!parsed) {
       return 'invalid: malformed key field format'
     }
-    const alg = event.key.substring(0, colonIdx)
-    if (alg !== 'secp256k1-schnorr') {
-      return `invalid: unknown algorithm in key field: ${alg}`
+    if (parsed.alg !== 'secp256k1-schnorr') {
+      return `invalid: unknown algorithm in key field: ${parsed.alg}`
     }
-    try {
-      const b64 = event.key.substring(colonIdx + 1)
-      const keyBytes = Buffer.from(b64, 'base64')
-      const computedUid = createHash('sha256').update(new Uint8Array(keyBytes)).digest('hex')
-      if (computedUid !== uid) {
-        return 'invalid: uid does not match carried key'
-      }
 
-      const pkBytes = new Uint8Array(keyBytes)
-      if (!schnorr.verify(sigBytes, idBytes, pkBytes)) {
-        return 'invalid: signature is wrong'
-      }
-      return undefined
-    } catch {
-      return 'invalid: signature verification failed'
+    const computedUid = bytesToHex(sha256(parsed.bytes))
+    if (computedUid !== uid) {
+      return 'invalid: uid does not match carried key'
     }
+
+    if (!schnorr.verify(sigBytes, idBytes, parsed.bytes)) {
+      return 'invalid: signature is wrong'
+    }
+    return undefined
   }
 
-  // 5. Dispatch: Kind 297 genesis exemption (no kid, no key)
-  const isGenesis =
-    event.kind === 297 &&
-    (event.variant === 'genesis' ||
-      (Array.isArray(event.tags) && event.tags.some((t: string[]) => t[0] === 'v' && t[1] === 'genesis')))
-
+  // 6. Dispatch: Kind 297 genesis exemption (no kid, no key)
   if (isGenesis) {
-    try {
-      const content = typeof event.content === 'string' ? JSON.parse(event.content) : event.content
-      const signKeyStr = content?.keys?.sign
-      if (!signKeyStr || typeof signKeyStr !== 'string') {
-        return 'invalid: Kind 297 genesis missing keys.sign'
-      }
-      const colonIdx = signKeyStr.indexOf(':')
-      if (colonIdx === -1) {
-        return 'invalid: malformed sign key string in genesis'
-      }
-      const alg = signKeyStr.substring(0, colonIdx)
-      if (alg !== 'secp256k1-schnorr') {
-        return `invalid: unknown signing algorithm: ${alg}`
-      }
-      const signKeyBytes = Buffer.from(signKeyStr.substring(colonIdx + 1), 'base64')
-      const expectedUid = createHash('sha256').update(new Uint8Array(signKeyBytes)).digest('hex')
-      if (uid !== expectedUid) {
-        return 'invalid: Kind 297 genesis uid does not match content.keys.sign'
-      }
+    const content = extractContent(event)
+    if (!content) return 'invalid: malformed content'
 
-      const pkBytes = new Uint8Array(signKeyBytes)
-      if (!schnorr.verify(sigBytes, idBytes, pkBytes)) {
-        return 'invalid: signature is wrong'
+    const signKeyStr = content?.keys?.sign
+    if (!signKeyStr || typeof signKeyStr !== 'string') {
+      return 'invalid: Kind 297 genesis missing keys.sign'
+    }
+    const parsed = parsePublicKey(signKeyStr)
+    if (!parsed) {
+      return 'invalid: malformed sign key string in genesis'
+    }
+    if (parsed.alg !== 'secp256k1-schnorr') {
+      return `invalid: unknown signing algorithm: ${parsed.alg}`
+    }
+
+    const expectedUid = bytesToHex(sha256(parsed.bytes))
+    if (uid !== expectedUid) {
+      return 'invalid: Kind 297 genesis uid does not match content.keys.sign'
+    }
+
+    if (!schnorr.verify(sigBytes, idBytes, parsed.bytes)) {
+      return 'invalid: signature is wrong'
+    }
+
+    // Platform genesis exemption vs user genesis endorsement check
+    const platformId = context?.platformId
+    const isPlatformGenesis = Boolean(platformId && uid === platformId)
+
+    if (isPlatformGenesis) {
+      if (content.platform) {
+        return 'invalid: platform genesis must not carry platform endorsement'
       }
       return undefined
-    } catch {
-      return 'invalid: failed to verify Kind 297 genesis'
     }
+
+    // User genesis requires platform endorsement
+    if (chainLookup) {
+      if (isAsync) {
+        return (async () => {
+          const endorsingEntry = await chainLookup(content.platform?.entry)
+          return checkEndorsement(endorsingEntry, uid, 'genesis', content, platformId)
+        })()
+      } else {
+        const endorsingEntry = chainLookup(content.platform?.entry)
+        return checkEndorsement(endorsingEntry, uid, 'genesis', content, platformId)
+      }
+    }
+
+    return undefined
   }
 
-  // 6. Dispatch: Chain-verified branch (kid present)
+  // 7. Dispatch: Chain-verified branch (kid present)
   if (hasKid) {
     if (!chainLookup) {
-      // In synchronous pre-filter mode without chainLookup, structural validation and ID recompute passed.
-      // Full cryptographic chain verification is deferred to the async write gate.
       if (!isAsync) return undefined
       return 'invalid: chain lookup required for kid verification'
     }
 
-    // The async IIFE is intentional: verifyVerityEventInternal serves both sync and async callers.
-    // Keeping the outer function non-async allows synchronous return values for verifyVerityEventSync
-    // while awaiting the async chainLookup promise when isAsync is true.
     if (isAsync) {
       return (async () => {
         try {
           const entry = await chainLookup(event.kid)
-          return verifyChainEntryHelper(entry, event, uid, sigBytes, idBytes)
+          return await verifyChainEntryHelper(entry, event, uid, sigBytes, idBytes, chainLookup, context?.platformId, true)
         } catch (e: any) {
           return `invalid: chain verification failed: ${e.message}`
         }
@@ -190,45 +324,52 @@ function verifyVerityEventInternal(
     } else {
       try {
         const entry = chainLookup(event.kid)
-        return verifyChainEntryHelper(entry, event, uid, sigBytes, idBytes)
+        return verifyChainEntryHelper(entry, event, uid, sigBytes, idBytes, chainLookup, context?.platformId, false)
       } catch (e: any) {
         return `invalid: chain verification failed: ${e.message}`
       }
     }
   }
 
-  // 7. Neither kid nor key present
+  // 8. Neither kid nor key present
   return 'invalid: missing kid or key'
 }
+
+// ── Chain Entry Helpers ──────────────────────────────────────────────────────
 
 function verifyChainEntryHelper(
   entry: any,
   event: any,
   uid: string,
   sigBytes: Uint8Array,
-  idBytes: Uint8Array
-): string | undefined {
+  idBytes: Uint8Array,
+  chainLookup: ChainLookupFn,
+  platformId?: string,
+  isAsync = false
+): Promise<string | undefined> | (string | undefined) {
   if (!entry) {
-    return `invalid: referenced chain entry ${event.kid} not found`
+    return `invalid: [CHAIN_ENTRY_UNKNOWN]: referenced chain entry ${event.kid} not found`
   }
   if (entry.kind !== 297) {
     return 'invalid: referenced chain entry is not Kind 297'
   }
-  // Bind uid: the event's uid must match the chain entry owner
+
   const entryUid = entry.uid ?? entry.pubkey
   if (entryUid !== uid) {
     return 'invalid: event uid does not match chain entry uid'
   }
-  // Reject revoked entries
-  // Note (Phase 02 stand-in): raw DB rows do not contain a revokedBy column.
-  // Full multi-entry revocation enforcement is handled by the in-memory chain cache in Phase 03.
-  if (entry.revokedBy) {
-    return `invalid: referenced chain entry ${event.kid} has been revoked`
-  }
-  const entryContent = typeof entry.content === 'string' ? JSON.parse(entry.content) : entry.content
 
-  // Scope check for delegate entries
-  // Note (Phase 02 stand-in): procedural delegation-scope check; will be replaced by EDM cache validation in Phase 03.
+  // Acceptance rule: reject seen-revoked entries
+  if (entry.revokedBy) {
+    return 'invalid: referenced chain entry has been revoked'
+  }
+
+  const entryContent = extractContent(entry)
+  if (!entryContent) {
+    return 'invalid: referenced chain entry has malformed content'
+  }
+
+  // Delegate scope check
   const isDelegate =
     entry.variant === 'delegate' ||
     (Array.isArray(entry.tags) && entry.tags.some((t: string[]) => t[0] === 'v' && t[1] === 'delegate'))
@@ -255,17 +396,104 @@ function verifyChainEntryHelper(
   if (!signKeyStr || typeof signKeyStr !== 'string') {
     return 'invalid: referenced chain entry missing keys.sign'
   }
-  const colonIdx = signKeyStr.indexOf(':')
-  if (colonIdx === -1) {
+  const parsed = parsePublicKey(signKeyStr)
+  if (!parsed) {
     return 'invalid: malformed sign key in referenced chain entry'
   }
-  const alg = signKeyStr.substring(0, colonIdx)
-  if (alg !== 'secp256k1-schnorr') {
-    return `invalid: unknown signing algorithm: ${alg}`
+  if (parsed.alg !== 'secp256k1-schnorr') {
+    return `invalid: unknown signing algorithm: ${parsed.alg}`
   }
-  const pkBytes = new Uint8Array(Buffer.from(signKeyStr.substring(colonIdx + 1), 'base64'))
-  if (!schnorr.verify(sigBytes, idBytes, pkBytes)) {
+
+  if (!schnorr.verify(sigBytes, idBytes, parsed.bytes)) {
     return 'invalid: signature is wrong'
   }
+
+  // Kind 297 internal write-time proofs
+  if (event.kind === 297) {
+    const variant = extractVariant(event)
+    const content = extractContent(event)
+
+    // 1. Rotate countersignature
+    if (variant === 'rotate' && content?.keys?.sign) {
+      if (!content.countersign) {
+        return 'invalid: rotate with keys.sign missing countersign'
+      }
+      const newSignKey = parsePublicKey(content.keys.sign)
+      if (!newSignKey || newSignKey.alg !== 'secp256k1-schnorr') {
+        return 'invalid: malformed new sign key in rotate'
+      }
+      const newSignKeyHash = bytesToHex(sha256(newSignKey.bytes))
+      const preimage = countersignPreimage(uid, newSignKeyHash, content.valid.from)
+      if (!preimage) {
+        return 'invalid: failed to construct countersign preimage'
+      }
+      const preimageHash = sha256(new TextEncoder().encode(preimage))
+      const counterSigBytes = decodeSignature(content.countersign)
+      if (!counterSigBytes || !schnorr.verify(counterSigBytes, preimageHash, newSignKey.bytes)) {
+        return 'invalid: invalid countersignature'
+      }
+    }
+
+    // 2. Platform Endorsement verification
+    if (variant && variant !== 'genesis') {
+      if (isAsync) {
+        return (async () => {
+          const endorsingEntry = await chainLookup(content.platform?.entry)
+          return checkEndorsement(endorsingEntry, uid, variant, content, platformId)
+        })()
+      } else {
+        const endorsingEntry = chainLookup(content.platform?.entry)
+        return checkEndorsement(endorsingEntry, uid, variant, content, platformId)
+      }
+    }
+  }
+
   return undefined
 }
+
+function checkEndorsement(
+  endorsingEntry: any,
+  uid: string,
+  variant: string,
+  content: any,
+  platformId?: string
+): string | undefined {
+  if (!content?.platform) {
+    return 'invalid: missing platform endorsement'
+  }
+  if (!content.platform.entry || !content.platform.b64) {
+    return 'invalid: malformed platform endorsement'
+  }
+  if (!endorsingEntry) {
+    return `invalid: endorsing entry ${content.platform.entry} not found`
+  }
+
+  const endorsingUid = endorsingEntry.uid ?? endorsingEntry.pubkey
+  if (platformId && endorsingUid !== platformId) {
+    return 'invalid: endorsing entry does not belong to platform identity'
+  }
+
+  const endorsingContent = extractContent(endorsingEntry)
+  if (!endorsingContent?.keys?.sign) {
+    return 'invalid: endorsing entry missing keys.sign'
+  }
+
+  const endorsingKey = parsePublicKey(endorsingContent.keys.sign)
+  if (!endorsingKey || endorsingKey.alg !== 'secp256k1-schnorr') {
+    return 'invalid: malformed endorsing key'
+  }
+
+  const endorsementStr = endorsementPreimage(uid, variant, content)
+  const endorsementHash = sha256(new TextEncoder().encode(endorsementStr))
+  const endorsementSigBytes = decodeSignature(content.platform.b64)
+  if (!endorsementSigBytes) {
+    return 'invalid: malformed platform endorsement signature'
+  }
+
+  if (!schnorr.verify(endorsementSigBytes, endorsementHash, endorsingKey.bytes)) {
+    return 'invalid: invalid platform endorsement signature'
+  }
+
+  return undefined
+}
+
