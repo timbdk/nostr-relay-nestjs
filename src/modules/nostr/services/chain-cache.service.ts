@@ -99,6 +99,9 @@ export class ChainCacheService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   onModuleInit() {
+    // Register held entry egress filter
+    this.eventRepository.setHeldChecker((id) => this.heldEntryIds.has(id))
+
     // Subscribe synchronously to repository post-insert notifications
     this.eventRepository.onInsert((event) => {
       if (event.kind === 297) {
@@ -213,7 +216,8 @@ export class ChainCacheService implements OnModuleInit, OnApplicationBootstrap {
 
     // 4. Revocation linking
     if (variant === 'revoke') {
-      const revokedTargetId = content.revoked?.entry || entry.kid
+      const eTag = Array.isArray(event.tags) ? event.tags.find((t: string[]) => t[0] === 'e') : null
+      const revokedTargetId = eTag?.[1] || content.revoked?.entry
       if (revokedTargetId) {
         entry.revokedEntryId = revokedTargetId
         const targetEntry = this.entryById.get(revokedTargetId)
@@ -328,6 +332,15 @@ export class ChainCacheService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   // ── Testing Reset ──────────────────────────────────────────────────────────
+
+  setChainReady(ready: boolean): void {
+    this.chainReady = ready
+    if (ready) {
+      this.checkpointService?.broadcast('relay.chain.backfilled', {
+        count: this.entryById.size,
+      })
+    }
+  }
 
   async reset(): Promise<void> {
     this.entriesByUid.clear()

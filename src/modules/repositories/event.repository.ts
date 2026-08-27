@@ -27,11 +27,13 @@ import { buildEventRow, buildGenericTagRows, extractGenericTagsFrom } from './ev
 // ── Repository Class ─────────────────────────────────────────────────────────
 
 export type EventInsertListener = (event: any) => void
+export type EventHeldChecker = (id: string) => boolean
 
 @Injectable()
 export class EventRepository extends IEventRepository {
   private readonly db: Kysely<Database>
   private readonly insertListeners = new Set<EventInsertListener>()
+  private heldChecker?: EventHeldChecker
 
   constructor(
     kyselyDb: KyselyDb,
@@ -44,6 +46,10 @@ export class EventRepository extends IEventRepository {
 
   isSearchSupported(): boolean {
     return true
+  }
+
+  setHeldChecker(checker: EventHeldChecker): void {
+    this.heldChecker = checker
   }
 
   /**
@@ -227,7 +233,11 @@ export class EventRepository extends IEventRepository {
         .limit(limit)
         .execute()
 
-      return rows.map(mapRowToEvent)
+      const mapped = rows.map(mapRowToEvent)
+      if (this.heldChecker) {
+        return mapped.filter((e) => !(e.kind === 297 && this.heldChecker!(e.id)))
+      }
+      return mapped
     }
 
     const rows = await this.createSelectQuery(filter)
@@ -235,7 +245,11 @@ export class EventRepository extends IEventRepository {
       .limit(limit)
       .execute()
 
-    return rows.map(mapRowToEvent)
+    const mapped = rows.map(mapRowToEvent)
+    if (this.heldChecker) {
+      return mapped.filter((e) => !(e.kind === 297 && this.heldChecker!(e.id)))
+    }
+    return mapped
   }
 
   async findTopIds(filter: Filter): Promise<TEventIdWithScore[]> {
