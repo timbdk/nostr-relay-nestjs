@@ -1,5 +1,5 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { schnorr } = require('@noble/curves/secp256k1.js');
+const { schnorr } = require('@noble/curves/secp256k1');
 import { createHash } from 'crypto';
 import type { Event } from '@nostr-relay/common';
 
