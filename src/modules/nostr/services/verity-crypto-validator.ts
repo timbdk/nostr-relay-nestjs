@@ -201,6 +201,13 @@ function verifyVerityEventInternal(
         return 'invalid: Kind 297 non-genesis requires kid'
       }
     }
+  } else if (!TRANSPORT_KINDS.has(event.kind) && event.kind !== 415) {
+    if (hasKey) {
+      return 'invalid: content events must not carry key'
+    }
+    if (!hasKid) {
+      return 'invalid: content events must specify kid'
+    }
   }
 
   // 4. ID recompute: 8-slot canonical serialization
