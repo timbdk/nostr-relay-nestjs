@@ -1,8 +1,9 @@
 /**
  * Purpose: Central Nostr Relay service coordinating event ingestion, validation, and broadcasting.
  * Behavior: Enforces NIP-42 authentication, uniform cryptographic verification against the chain cache,
- *           readiness gate, platform-chain trusted connection recognition, D-20 created-at exemption,
- *           read policy evaluation, and hold-until-first-use egress filtering.
+ *           readiness gate, platform-chain trusted connection recognition, a created-at guard that
+ *           exempts the trusted-channel kinds, read policy evaluation, and hold-until-first-use egress
+ *           filtering.
  * Usage: Injected into NostrGateway and EventController.
  */
 
@@ -133,7 +134,11 @@ export class NostrRelayService implements OnApplicationShutdown {
     this.throttler = new Throttler(throttlerConfig)
     this.relay.register(wrapInSafety(this.throttler))
 
-    // D-20 CreatedAtLimitGuard wrapper: exempt trusted-channel kinds 297 and 415
+    // CreatedAtLimitGuard wrapper: exempt trusted-channel kinds 297 and 415.
+    // Their chain entries are backdated to 00:00 UTC (up to 24 h old at
+    // publication), and these kinds arrive only over the trusted connection,
+    // which is the authority on their validity — the guard targets untrusted
+    // writes and keeps covering content kinds and browser-origin traffic.
     const innerCreatedAtLimitGuard = new CreatedAtLimitGuard({
       lowerLimit: createdAtLowerLimit,
       upperLimit: createdAtUpperLimit,
