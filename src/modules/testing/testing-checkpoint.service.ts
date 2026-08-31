@@ -19,6 +19,12 @@ export class TestingCheckpointService implements OnModuleInit, OnModuleDestroy {
   private readonly clients = new Set<WebSocket>();
   private readonly enabled = process.env.NODE_ENV === 'testing';
   private wss: WebSocketServer | null = null;
+  // Ring buffer of recent checkpoints, replayed to each new subscriber so a
+  // reconnecting pipeline monitor cannot miss events that fired during the gap.
+  // Subscribers pass ?since=<ts> to receive only the events newer than what
+  // they already saw — stale events from before the connection are never replayed.
+  private readonly recentCheckpoints: { ts: number; payload: string }[] = [];
+  private readonly maxBuffer = 500;
 
   constructor(
     @InjectPinoLogger(TestingCheckpointService.name)
@@ -33,11 +39,21 @@ export class TestingCheckpointService implements OnModuleInit, OnModuleDestroy {
       path: '/testing/stream',
     });
 
-    this.wss.on('connection', (ws: any) => {
+    this.wss.on('connection', (ws: any, req: any) => {
       this.clients.add(ws);
       this.logger.debug(
         `[testing] Stream client connected (${this.clients.size} total)`,
       );
+
+      // Ack first (marks subscription) then replay only the checkpoints the
+      // subscriber has not seen yet (newer than the ?since= query parameter).
+      const since = this.parseSince(req?.url);
+      const replay = this.recentCheckpoints
+        .filter((c) => since === undefined || c.ts > since)
+        .map((c) => c.payload);
+      try {
+        ws.send(JSON.stringify({ type: 'ack', buffer: replay }));
+      } catch { /* ignore */ }
 
       ws.on('close', () => {
         this.clients.delete(ws);
@@ -56,6 +72,16 @@ export class TestingCheckpointService implements OnModuleInit, OnModuleDestroy {
         `[testing] Checkpoint stream listening on port ${TESTING_PORT}`,
       );
     });
+  }
+
+  private parseSince(url?: string): number | undefined {
+    if (!url) return undefined;
+    const query = String(url).split('?')[1];
+    if (!query) return undefined;
+    const since = new URLSearchParams(query).get('since');
+    if (since === null) return undefined;
+    const parsed = Number.parseInt(since, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   onModuleDestroy() {
@@ -79,7 +105,7 @@ export class TestingCheckpointService implements OnModuleInit, OnModuleDestroy {
    * @param data - Optional metadata (kind, pubkey, id, pTags)
    */
   broadcast(step: string, data?: Record<string, any>): void {
-    if (!this.enabled || this.clients.size === 0) return;
+    if (!this.enabled) return;
 
     const payload = JSON.stringify({
       type: 'checkpoint',
@@ -88,6 +114,11 @@ export class TestingCheckpointService implements OnModuleInit, OnModuleDestroy {
       service: 'relay',
       data,
     });
+
+    this.recentCheckpoints.push({ ts: Date.now(), payload });
+    if (this.recentCheckpoints.length > this.maxBuffer) {
+      this.recentCheckpoints.shift();
+    }
 
     for (const client of this.clients) {
       try {

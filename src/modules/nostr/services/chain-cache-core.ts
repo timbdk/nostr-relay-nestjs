@@ -103,6 +103,9 @@ export class ChainCacheCore {
   private readonly platformId: string
   private readonly createdAtLowerLimit: number
   private chainReady = false
+  // Testing override: pins readiness independent of backfill completion.
+  // Set via /testing/set-chain-ready; cleared by /testing/reset-chain-cache.
+  private readyOverride: boolean | undefined
 
   // Indexes
   private readonly entriesByUid = new Map<string, ChainEntry[]>()
@@ -154,7 +157,11 @@ export class ChainCacheCore {
         this.applyEvent(event, true)
       }
 
-      this.chainReady = true
+      // A testing readiness override wins over backfill completion so that
+      // forced-cold-start scenarios keep observing the syncing gate.
+      if (this.readyOverride === undefined) {
+        this.chainReady = true
+      }
       clearTimeout(timeoutHandle)
 
       const totalEntries = this.entryById.size
@@ -353,6 +360,7 @@ export class ChainCacheCore {
   // ── Testing Reset ──────────────────────────────────────────────────────────
 
   setChainReady(ready: boolean): void {
+    this.readyOverride = ready
     this.chainReady = ready
     if (ready) {
       this.checkpointService?.broadcast('relay.chain.backfilled', {
@@ -366,6 +374,7 @@ export class ChainCacheCore {
     this.entryById.clear()
     this.entryByCertifiedKeyHash.clear()
     this.heldEntryIds.clear()
+    this.readyOverride = undefined
     this.chainReady = false
     await this.backfill()
   }
