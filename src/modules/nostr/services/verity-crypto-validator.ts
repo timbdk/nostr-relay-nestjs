@@ -1,18 +1,33 @@
 /**
- * Purpose: Cryptographic verification of Verity events according to the PQE Set A uniform path.
+ * Purpose: Cryptographic verification of Verity events according to the PQE Set A and Set B uniform path.
  * Behavior: Validates 8-slot canonical serialization, self-certifying keys, chain-verified keys via
  *           chain cache lookups, validity windows, delegation scopes, revocations, rotate countersignatures,
- *           and platform endorsements.
+ *           and platform endorsements with algorithm agility (ML-DSA-44 and secp256k1-schnorr).
  * Usage: Consumed by NostrRelayService (asynchronous write gate) and EventUtils.validate (synchronous monkey-patch).
  */
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
-import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { base64 } from '@scure/base'
 import { createHash } from 'crypto'
+import {
+  verify as cryptoVerify,
+  PUBLIC_KEY_BYTES,
+  SIGNATURE_BYTES,
+  SIGNING_ALGORITHMS,
+} from 'verity-event-data-module'
+
+const SUPPORTED_SIGNATURE_SIZES = new Set<number>(Object.values(SIGNATURE_BYTES))
+
+function safeCryptoVerify(alg: string, pkBytes: Uint8Array, messageBytes: Uint8Array, sigBytes: Uint8Array): boolean {
+  try {
+    return cryptoVerify(alg, pkBytes, messageBytes, sigBytes)
+  } catch {
+    return false
+  }
+}
 
 // ── Preimage Builders ────────────────────────────────────────────────────────
 
@@ -51,7 +66,6 @@ export function endorsementPreimage(identityIdHex: string, variant: string, cont
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-
 export interface ChainLookupContext {
   platformId?: string
 }
@@ -78,10 +92,21 @@ function parsePublicKey(keyStr: string): { alg: string; bytes: Uint8Array } | nu
   }
 }
 
+/**
+ * Decodes a raw signature string into bytes.
+ *
+ * Format conventions:
+ * - Nostr event signatures (`event.sig`) are hex-encoded per standard protocol:
+ *   128 hex chars (64 bytes) for secp256k1-schnorr, 4,840 hex chars (2,420 bytes) for ml-dsa-44.
+ * - Kind 297 embedded signatures (`content.countersign`, `content.platform.b64`) may be
+ *   hex-encoded or base64-encoded.
+ *
+ * Any even-length all-hex string is treated as hex; otherwise, falls back to base64 decoding.
+ */
 function decodeSignature(sigStr: string): Uint8Array | null {
   if (typeof sigStr !== 'string' || !sigStr) return null
   try {
-    if (sigStr.length === 128 && /^[0-9a-fA-F]+$/.test(sigStr)) {
+    if (/^[0-9a-fA-F]+$/.test(sigStr) && sigStr.length % 2 === 0) {
       return hexToBytes(sigStr)
     }
     return base64.decode(sigStr)
@@ -152,7 +177,7 @@ function verifyVerityEventInternal(
     return event.uid ? 'invalid: uid is wrong' : 'invalid: pubkey is wrong'
   }
 
-  if (!event.sig || typeof event.sig !== 'string' || !/^[0-9a-f]+$/i.test(event.sig)) {
+  if (!event.sig || typeof event.sig !== 'string' || !/^[0-9a-f]+$/i.test(event.sig) || event.sig.length % 2 !== 0) {
     return 'invalid: signature is wrong'
   }
 
@@ -238,13 +263,19 @@ function verifyVerityEventInternal(
     return 'invalid: signature is wrong'
   }
 
+  // Fast-fail: signature byte length must match at least one supported signing algorithm
+  // before performing database / cache lookups or cryptographic verification
+  if (!SUPPORTED_SIGNATURE_SIZES.has(sigBytes.length)) {
+    return 'invalid: signature is wrong'
+  }
+
   // 5. Dispatch: Self-certifying branch (key present)
   if (hasKey) {
     const parsed = parsePublicKey(event.key)
     if (!parsed) {
       return 'invalid: malformed key field format'
     }
-    if (parsed.alg !== 'secp256k1-schnorr') {
+    if (!SIGNING_ALGORITHMS.has(parsed.alg)) {
       return `invalid: unknown algorithm in key field: ${parsed.alg}`
     }
 
@@ -253,7 +284,17 @@ function verifyVerityEventInternal(
       return 'invalid: uid does not match carried key'
     }
 
-    if (!schnorr.verify(sigBytes, idBytes, parsed.bytes)) {
+    const expectedPkLen = PUBLIC_KEY_BYTES[parsed.alg as keyof typeof PUBLIC_KEY_BYTES]
+    if (expectedPkLen === undefined || parsed.bytes.length !== expectedPkLen) {
+      return 'invalid: malformed key field format'
+    }
+
+    const expectedSigLen = SIGNATURE_BYTES[parsed.alg as keyof typeof SIGNATURE_BYTES]
+    if (expectedSigLen === undefined || sigBytes.length !== expectedSigLen) {
+      return 'invalid: signature is wrong'
+    }
+
+    if (!safeCryptoVerify(parsed.alg, parsed.bytes, idBytes, sigBytes)) {
       return 'invalid: signature is wrong'
     }
     return undefined
@@ -272,7 +313,7 @@ function verifyVerityEventInternal(
     if (!parsed) {
       return 'invalid: malformed sign key string in genesis'
     }
-    if (parsed.alg !== 'secp256k1-schnorr') {
+    if (!SIGNING_ALGORITHMS.has(parsed.alg)) {
       return `invalid: unknown signing algorithm: ${parsed.alg}`
     }
 
@@ -281,7 +322,17 @@ function verifyVerityEventInternal(
       return 'invalid: Kind 297 genesis uid does not match content.keys.sign'
     }
 
-    if (!schnorr.verify(sigBytes, idBytes, parsed.bytes)) {
+    const expectedPkLen = PUBLIC_KEY_BYTES[parsed.alg as keyof typeof PUBLIC_KEY_BYTES]
+    if (expectedPkLen === undefined || parsed.bytes.length !== expectedPkLen) {
+      return 'invalid: malformed sign key string in genesis'
+    }
+
+    const expectedSigLen = SIGNATURE_BYTES[parsed.alg as keyof typeof SIGNATURE_BYTES]
+    if (expectedSigLen === undefined || sigBytes.length !== expectedSigLen) {
+      return 'invalid: signature is wrong'
+    }
+
+    if (!safeCryptoVerify(parsed.alg, parsed.bytes, idBytes, sigBytes)) {
       return 'invalid: signature is wrong'
     }
 
@@ -407,11 +458,21 @@ function verifyChainEntryHelper(
   if (!parsed) {
     return 'invalid: malformed sign key in referenced chain entry'
   }
-  if (parsed.alg !== 'secp256k1-schnorr') {
+  if (!SIGNING_ALGORITHMS.has(parsed.alg)) {
     return `invalid: unknown signing algorithm: ${parsed.alg}`
   }
 
-  if (!schnorr.verify(sigBytes, idBytes, parsed.bytes)) {
+  const expectedPkLen = PUBLIC_KEY_BYTES[parsed.alg as keyof typeof PUBLIC_KEY_BYTES]
+  if (expectedPkLen === undefined || parsed.bytes.length !== expectedPkLen) {
+    return 'invalid: malformed sign key in referenced chain entry'
+  }
+
+  const expectedSigLen = SIGNATURE_BYTES[parsed.alg as keyof typeof SIGNATURE_BYTES]
+  if (expectedSigLen === undefined || sigBytes.length !== expectedSigLen) {
+    return 'invalid: signature is wrong'
+  }
+
+  if (!safeCryptoVerify(parsed.alg, parsed.bytes, idBytes, sigBytes)) {
     return 'invalid: signature is wrong'
   }
 
@@ -426,7 +487,11 @@ function verifyChainEntryHelper(
         return 'invalid: rotate with keys.sign missing countersign'
       }
       const newSignKey = parsePublicKey(content.keys.sign)
-      if (!newSignKey || newSignKey.alg !== 'secp256k1-schnorr') {
+      if (!newSignKey || !SIGNING_ALGORITHMS.has(newSignKey.alg)) {
+        return 'invalid: malformed new sign key in rotate'
+      }
+      const expectedNewPkLen = PUBLIC_KEY_BYTES[newSignKey.alg as keyof typeof PUBLIC_KEY_BYTES]
+      if (expectedNewPkLen === undefined || newSignKey.bytes.length !== expectedNewPkLen) {
         return 'invalid: malformed new sign key in rotate'
       }
       const newSignKeyHash = bytesToHex(sha256(newSignKey.bytes))
@@ -436,7 +501,11 @@ function verifyChainEntryHelper(
       }
       const preimageHash = sha256(new TextEncoder().encode(preimage))
       const counterSigBytes = decodeSignature(content.countersign)
-      if (!counterSigBytes || !schnorr.verify(counterSigBytes, preimageHash, newSignKey.bytes)) {
+      const expectedCounterSigLen = SIGNATURE_BYTES[newSignKey.alg as keyof typeof SIGNATURE_BYTES]
+      if (!counterSigBytes || expectedCounterSigLen === undefined || counterSigBytes.length !== expectedCounterSigLen) {
+        return 'invalid: invalid countersignature'
+      }
+      if (!safeCryptoVerify(newSignKey.alg, newSignKey.bytes, preimageHash, counterSigBytes)) {
         return 'invalid: invalid countersignature'
       }
     }
@@ -486,21 +555,25 @@ function checkEndorsement(
   }
 
   const endorsingKey = parsePublicKey(endorsingContent.keys.sign)
-  if (!endorsingKey || endorsingKey.alg !== 'secp256k1-schnorr') {
+  if (!endorsingKey || !SIGNING_ALGORITHMS.has(endorsingKey.alg)) {
+    return 'invalid: malformed endorsing key'
+  }
+  const expectedEndorsingPkLen = PUBLIC_KEY_BYTES[endorsingKey.alg as keyof typeof PUBLIC_KEY_BYTES]
+  if (expectedEndorsingPkLen === undefined || endorsingKey.bytes.length !== expectedEndorsingPkLen) {
     return 'invalid: malformed endorsing key'
   }
 
   const endorsementStr = endorsementPreimage(uid, variant, content)
   const endorsementHash = sha256(new TextEncoder().encode(endorsementStr))
   const endorsementSigBytes = decodeSignature(content.platform.b64)
-  if (!endorsementSigBytes) {
+  const expectedEndorsementSigLen = SIGNATURE_BYTES[endorsingKey.alg as keyof typeof SIGNATURE_BYTES]
+  if (!endorsementSigBytes || expectedEndorsementSigLen === undefined || endorsementSigBytes.length !== expectedEndorsementSigLen) {
     return 'invalid: malformed platform endorsement signature'
   }
 
-  if (!schnorr.verify(endorsementSigBytes, endorsementHash, endorsingKey.bytes)) {
+  if (!safeCryptoVerify(endorsingKey.alg, endorsingKey.bytes, endorsementHash, endorsementSigBytes)) {
     return 'invalid: invalid platform endorsement signature'
   }
 
   return undefined
 }
-

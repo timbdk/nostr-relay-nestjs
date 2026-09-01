@@ -11,8 +11,8 @@ import {
 import { createOutgoingNoticeMessage } from '@nostr-relay/common';
 import { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { Config } from 'src/config';
-import { MessageHandlingConfig } from 'src/config/message-handling.config';
+import { Config, MAX_WS_PAYLOAD_BYTES } from '../../../config';
+import { MessageHandlingConfig } from '../../../config/message-handling.config';
 import { WebSocket } from 'ws';
 import { ZodError } from 'zod';
 import { fromZodError } from 'zod-validation-error';
@@ -26,7 +26,7 @@ import { NostrRelayService } from '../services/nostr-relay.service';
 import { TestingCheckpointService } from '../../testing/testing-checkpoint.service';
 
 @WebSocketGateway({
-  maxPayload: 256 * 1024, // 256KB
+  maxPayload: MAX_WS_PAYLOAD_BYTES,
 })
 @UseInterceptors(LoggingInterceptor)
 @UseFilters(GlobalExceptionFilter)

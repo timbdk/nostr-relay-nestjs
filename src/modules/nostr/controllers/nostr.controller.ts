@@ -59,7 +59,7 @@ export class NostrController {
       git_commit_sha: relayInfo.gitCommitSha,
       supported_nips,
       limitation: {
-        max_message_length: 128 * 1024, // 128 KB
+        max_message_length: limitConfig.maxMessageBytes,
         max_subscriptions: limitConfig.maxSubscriptionsPerClient,
         max_filters: 10,
         max_limit: 1000,
