@@ -10,6 +10,7 @@
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
+import { existsSync, unlinkSync } from 'node:fs'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { base64 } from '@scure/base'
@@ -147,6 +148,16 @@ export class ChainCacheCore {
     }, backfillTimeoutMs)
 
     try {
+      if (process.env.NODE_ENV === 'testing' && existsSync('/tmp/chain-start-paused')) {
+        this.readyOverride = false
+        try {
+          unlinkSync('/tmp/chain-start-paused')
+        } catch {
+          // Ignore unlink error if already removed
+        }
+        this.logger.info('[CHAIN_CACHE] Testing pause flag detected — readiness gate held closed')
+      }
+
       this.logger.info('[CHAIN_CACHE] Starting cold-start backfill from storage...')
       const events = await this.eventRepository.find({ kinds: [297], limit: 100000 })
 
