@@ -233,8 +233,8 @@ export class NostrRelayService implements OnApplicationShutdown {
    * Resolves the user identity for a device key connection.
    */
   private resolveIdentity(clientPubkey: string, userPubkey: string): void {
-    const clientUid = /^[a-f0-9]{64}$/i.test(clientPubkey) ? identityIdFromPublicKey(clientPubkey) : clientPubkey
-    const userUid = /^[a-f0-9]{64}$/i.test(userPubkey) ? identityIdFromPublicKey(userPubkey) : userPubkey
+    const clientUid = /^[a-f0-9]{64}$/i.test(clientPubkey) ? clientPubkey : identityIdFromPublicKey(clientPubkey)
+    const userUid = /^[a-f0-9]{64}$/i.test(userPubkey) ? userPubkey : identityIdFromPublicKey(userPubkey)
 
     this.deviceIdentities.set(clientPubkey, userUid)
     this.deviceIdentities.set(clientUid, userUid)
@@ -364,10 +364,12 @@ export class NostrRelayService implements OnApplicationShutdown {
 
         // Production Gate Fix: Identity attestation consumption runs in all environments
         if (kind === 24135) {
-          const clientTag = tags.find((t: string[]) => t[0] === 'client')?.[1]
+          const clientTags = tags.filter((t: string[]) => t[0] === 'client').map((t: string[]) => t[1]).filter(Boolean)
           const userTag = tags.find((t: string[]) => t[0] === 'user')?.[1]
-          if (clientTag && userTag) {
-            this.resolveIdentity(clientTag, userTag)
+          if (userTag && clientTags.length > 0) {
+            for (const clientTag of clientTags) {
+              this.resolveIdentity(clientTag, userTag)
+            }
           }
         }
       } else if (msgType === 'REQ' && msg.length > 2) {

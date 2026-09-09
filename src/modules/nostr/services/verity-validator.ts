@@ -4,7 +4,8 @@ import { Event, Filter, IncomingMessage } from '@nostr-relay/common'
 import { Validator } from '@nostr-relay/validator'
 import {
   KindRegistry,
-  registeredKinds
+  registeredKinds,
+  identityIdFromPublicKey
 } from 'verity-event-data-module'
 
 export class VerityValidator extends Validator {
@@ -46,6 +47,29 @@ export class VerityValidator extends Validator {
         event.pubkey = event.uid
       }
       return ['AUTH', event] as IncomingMessage
+    }
+    if (type === 'REQ') {
+      if (msgArray.length < 2) throw new Error('Invalid REQ message')
+      for (let i = 2; i < msgArray.length; i++) {
+        const filter = msgArray[i]
+        if (filter && typeof filter === 'object') {
+          // Protocol deviation: Full ML-DSA public keys and prefixed representations are rewritten
+          // to 32-byte UIDs (SHA-256 digests) to match storage indexing. NIP-01 partial prefix filters
+          // on ML-DSA public keys cannot be translated because SHA-256 preimage digests cannot be derived
+          // from partial key prefixes.
+          if (Array.isArray(filter.authors)) {
+            filter.authors = filter.authors.map((a: any) =>
+              typeof a === 'string' && (a.length === 2624 || a.startsWith('ml-dsa-44:')) ? identityIdFromPublicKey(a) : a
+            )
+          }
+          if (Array.isArray(filter['#p'])) {
+            filter['#p'] = filter['#p'].map((p: any) =>
+              typeof p === 'string' && (p.length === 2624 || p.startsWith('ml-dsa-44:')) ? identityIdFromPublicKey(p) : p
+            )
+          }
+        }
+      }
+      return super.validateIncomingMessage(msgArray)
     }
 
     return super.validateIncomingMessage(message)

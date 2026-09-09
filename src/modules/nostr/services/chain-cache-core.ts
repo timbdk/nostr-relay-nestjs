@@ -72,10 +72,7 @@ function parsePublicKey(keyStr: string): { alg: string; bytes: Uint8Array } | nu
       const bytes = base64.decode(keyStr.substring(colonIdx + 1))
       return { alg, bytes }
     }
-    if (/^[a-f0-9]{64}$/i.test(keyStr)) {
-      return { alg: 'secp256k1-schnorr', bytes: hexToBytes(keyStr) }
-    }
-    return { alg: 'secp256k1-schnorr', bytes: base64.decode(keyStr) }
+    return null
   } catch {
     return null
   }
