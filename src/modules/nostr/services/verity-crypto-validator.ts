@@ -2,7 +2,7 @@
  * Purpose: Cryptographic verification of Verity events according to the PQE Set A and Set B uniform path.
  * Behavior: Validates 8-slot canonical serialization, self-certifying keys, chain-verified keys via
  *           chain cache lookups, validity windows, delegation scopes, revocations, rotate countersignatures,
- *           and platform endorsements with algorithm agility (ML-DSA-44 and secp256k1-schnorr).
+ *           and platform endorsements with algorithm agility (ML-DSA-44).
  * Usage: Consumed by NostrRelayService (asynchronous write gate) and EventUtils.validate (synchronous monkey-patch).
  */
 
@@ -17,6 +17,7 @@ import {
   PUBLIC_KEY_BYTES,
   SIGNATURE_BYTES,
   SIGNING_ALGORITHMS,
+  TRANSPORT_KINDS,
 } from 'verity-event-data-module'
 
 const SUPPORTED_SIGNATURE_SIZES = new Set<number>(Object.values(SIGNATURE_BYTES))
@@ -150,8 +151,6 @@ export function verifyVerityEventSync(
 }
 
 // ── Main Verification Logic ──────────────────────────────────────────────────
-
-const TRANSPORT_KINDS = new Set([22242, 24133, 24134, 24135])
 
 function verifyVerityEventInternal(
   event: any,
